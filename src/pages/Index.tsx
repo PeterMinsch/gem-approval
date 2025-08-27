@@ -190,7 +190,6 @@ const Index = () => {
           <TabsContent value="pending">
             <CommentGrid 
               comments={getFilteredComments('pending')} 
-              onEdit={handleEdit}
               onApprove={handleApprove}
               onReject={handleReject}
               emptyMessage="No pending comments to review."
@@ -200,7 +199,6 @@ const Index = () => {
           <TabsContent value="approved">
             <CommentGrid 
               comments={getFilteredComments('approved')} 
-              onEdit={handleEdit}
               onApprove={handleApprove}
               onReject={handleReject}
               emptyMessage="No approved comments."
@@ -210,7 +208,6 @@ const Index = () => {
           <TabsContent value="posted">
             <CommentGrid 
               comments={getFilteredComments('posted')} 
-              onEdit={handleEdit}
               onApprove={handleApprove}
               onReject={handleReject}
               emptyMessage="No posted comments yet."
@@ -220,7 +217,6 @@ const Index = () => {
           <TabsContent value="rejected">
             <CommentGrid 
               comments={getFilteredComments('rejected')} 
-              onEdit={handleEdit}
               onApprove={handleApprove}
               onReject={handleReject}
               emptyMessage="No rejected comments."
@@ -230,7 +226,6 @@ const Index = () => {
           <TabsContent value="all">
             <CommentGrid 
               comments={getFilteredComments('all')} 
-              onEdit={handleEdit}
               onApprove={handleApprove}
               onReject={handleReject}
               emptyMessage="No comments available."
@@ -256,13 +251,12 @@ const Index = () => {
 
 interface CommentGridProps {
   comments: Comment[];
-  onEdit: (comment: Comment) => void;
-  onApprove: (commentId: string) => void;
+  onApprove: (commentId: string, editedComment?: string) => void;
   onReject: (commentId: string) => void;
   emptyMessage: string;
 }
 
-function CommentGrid({ comments, onEdit, onApprove, onReject, emptyMessage }: CommentGridProps) {
+function CommentGrid({ comments, onApprove, onReject, emptyMessage }: CommentGridProps) {
   if (comments.length === 0) {
     return (
       <div className="text-center py-12">
@@ -278,7 +272,6 @@ function CommentGrid({ comments, onEdit, onApprove, onReject, emptyMessage }: Co
         <CommentCard
           key={comment.id}
           comment={comment}
-          onEdit={onEdit}
           onApprove={onApprove}
           onReject={onReject}
         />

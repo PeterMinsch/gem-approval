@@ -1,7 +1,9 @@
+import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardFooter, CardHeader } from "@/components/ui/card";
-import { ExternalLink, Edit, Check, X, Clock } from "lucide-react";
+import { Textarea } from "@/components/ui/textarea";
+import { ExternalLink, Check, X, Clock } from "lucide-react";
 import { StatusBadge } from "./StatusBadge";
 
 export type CommentStatus = 'pending' | 'approved' | 'rejected' | 'posted';
@@ -19,12 +21,12 @@ export interface Comment {
 
 interface CommentCardProps {
   comment: Comment;
-  onEdit: (comment: Comment) => void;
-  onApprove: (commentId: string) => void;
+  onApprove: (commentId: string, editedComment?: string) => void;
   onReject: (commentId: string) => void;
 }
 
-export function CommentCard({ comment, onEdit, onApprove, onReject }: CommentCardProps) {
+export function CommentCard({ comment, onApprove, onReject }: CommentCardProps) {
+  const [editedComment, setEditedComment] = useState(comment.suggestedComment);
   const isPending = comment.status === 'pending';
   
   return (
@@ -56,47 +58,39 @@ export function CommentCard({ comment, onEdit, onApprove, onReject }: CommentCar
       <CardContent className="pt-0">
         <div className="space-y-2">
           <h4 className="font-medium text-sm">Suggested Comment:</h4>
-          <p className="text-sm bg-muted/50 p-3 rounded-md border">
-            {comment.suggestedComment}
-          </p>
+          <Textarea
+            value={editedComment}
+            onChange={(e) => setEditedComment(e.target.value)}
+            disabled={!isPending}
+            className="text-sm min-h-[80px] resize-none"
+            placeholder="Edit your comment here..."
+          />
         </div>
       </CardContent>
       
       <CardFooter className="pt-0">
-        <div className="flex gap-2 w-full">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => onEdit(comment)}
-            className="flex-1"
-            disabled={!isPending}
-          >
-            <Edit className="h-3 w-3 mr-1" />
-            Edit
-          </Button>
-          
-          {isPending && (
-            <>
-              <Button
-                variant="default"
-                size="sm"
-                onClick={() => onApprove(comment.id)}
-                className="bg-success hover:bg-success/90 text-success-foreground"
-              >
-                <Check className="h-3 w-3 mr-1" />
-                Approve
-              </Button>
-              <Button
-                variant="destructive"
-                size="sm"
-                onClick={() => onReject(comment.id)}
-              >
-                <X className="h-3 w-3 mr-1" />
-                Reject
-              </Button>
-            </>
-          )}
-        </div>
+        {isPending && (
+          <div className="flex gap-2 w-full">
+            <Button
+              variant="default"
+              size="sm"
+              onClick={() => onApprove(comment.id, editedComment)}
+              className="bg-success hover:bg-success/90 text-success-foreground flex-1"
+            >
+              <Check className="h-3 w-3 mr-1" />
+              Approve
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => onReject(comment.id)}
+              className="flex-1"
+            >
+              <X className="h-3 w-3 mr-1" />
+              Reject
+            </Button>
+          </div>
+        )}
       </CardFooter>
     </Card>
   );
