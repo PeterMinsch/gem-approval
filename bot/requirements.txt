@@ -3,3 +3,7 @@ webdriver-manager
 openai==0.28
 python-dotenv
 pre-commit
+fastapi
+uvicorn[standard]
+pydantic
+requests
