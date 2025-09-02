@@ -1,3 +1,8 @@
+import threading
+import queue
+import time
+import os
+print("RUNNING FILE:", os.path.abspath(__file__))
 import pytesseract
 from PIL import Image
 import requests
@@ -227,9 +232,10 @@ class CommentGenerator:
         if self.config.get("openai", {}).get("enabled", False):
             try:
                 import openai
-                # Use new v1.x+ client initialization
-                self.openai_client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-                if self.openai_client.api_key:
+                api_key = os.getenv("OPENAI_API_KEY")
+                if api_key:
+                    openai.api_key = api_key
+                    self.openai_client = openai
                     logger.info("✅ OpenAI client initialized successfully")
                 else:
                     logger.warning("⚠️ OPENAI_API_KEY not found in environment variables")
@@ -311,8 +317,8 @@ class CommentGenerator:
             # Get OpenAI configuration
             openai_config = self.config.get("openai", {})
             
-            # Make API call using NEW v1.x+ syntax
-            response = self.openai_client.chat.completions.create(
+            # Make API call using correct OpenAI syntax
+            response = self.openai_client.ChatCompletion.create(
                 model=openai_config.get("model", "gpt-4o-mini"),
                 messages=[
                     {"role": "system", "content": prompt}
@@ -320,8 +326,7 @@ class CommentGenerator:
                 max_tokens=openai_config.get("max_tokens", 150),
                 temperature=openai_config.get("temperature", 0.7)
             )
-            
-            comment = response.choices[0].message.content.strip()
+            comment = response.choices[0].message['content'].strip() if hasattr(response.choices[0], 'message') else response.choices[0].text.strip()
             logger.info(f"🤖 LLM generated comment: {comment[:100]}...")
             return comment
             
@@ -529,6 +534,143 @@ def already_commented(existing_comments: List[str]) -> bool:
     return detector.already_commented(existing_comments)
 
 class FacebookAICommentBot:
+    def setup_posting_driver(self):
+        """Set up a second, headless browser for posting comments."""
+        try:
+            chrome_options = Options()
+            chrome_options.add_argument("--headless=new")
+            chrome_options.add_argument("--disable-popup-blocking")
+            chrome_options.add_argument("--disable-notifications")
+            chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+            chrome_options.add_experimental_option('useAutomationExtension', False)
+            chrome_options.binary_location = "C:/Program Files/Google/Chrome/Application/chrome.exe"
+            user_data_dir = os.path.join(os.getcwd(), "chrome_data")
+            chrome_options.add_argument(f"--user-data-dir={user_data_dir}")
+            chrome_options.add_argument(f"--profile-directory={self.config['CHROME_PROFILE']}")
+            chrome_options.add_argument("--window-size=1920,1080")
+            service = Service(ChromeDriverManager().install())
+            self.posting_driver = webdriver.Chrome(service=service, options=chrome_options)
+            logger.info("Background posting Chrome driver set up (headless mode).")
+        except Exception as e:
+            logger.error(f"Failed to setup background posting Chrome Driver: {e}")
+            self.posting_driver = None
+
+    def start_posting_thread(self):
+        """Start a background thread to post comments from the queue."""
+        self.posting_queue = queue.Queue()
+        self.posting_thread = threading.Thread(target=self._posting_worker, daemon=True)
+        self.posting_thread.start()
+        logger.info("Background posting thread started.")
+
+    def _posting_worker(self):
+        """Worker function for the posting thread."""
+        self.setup_posting_driver()
+        while True:
+            try:
+                post_url, comment = self.posting_queue.get()
+                logger.info(f"[POSTING THREAD] Posting comment to: {post_url}")
+                self._post_comment_background(post_url, comment)
+                self.posting_queue.task_done()
+            except Exception as e:
+                logger.error(f"[POSTING THREAD] Error posting comment: {e}")
+
+    def _post_comment_background(self, post_url, comment):
+        """Navigate to post_url in the posting driver and post the comment. Use explicit waits and retry logic for robustness."""
+        from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
+        from selenium.webdriver.support.ui import WebDriverWait
+        from selenium.webdriver.support import expected_conditions as EC
+        driver = self.posting_driver
+        try:
+            driver.get(post_url)
+            time.sleep(5)
+            def find_comment_box():
+                elements = driver.find_elements(By.XPATH, self.config['COMMENT_BOX_XPATH'])
+                if not elements:
+                    for fallback_xpath in self.config.get('COMMENT_BOX_FALLBACK_XPATHS', []):
+                        elements = driver.find_elements(By.XPATH, fallback_xpath)
+                        if elements:
+                            break
+                return elements[0] if elements else None
+
+            # Wait for comment box to be present
+            comment_area = None
+            try:
+                comment_area = WebDriverWait(driver, 10).until(lambda d: find_comment_box())
+            except TimeoutException:
+                logger.error(f"[POSTING THREAD] Could not find comment box for: {post_url}")
+                return
+
+            # Robust interaction with retries
+            def safe_action(action_fn, max_retries=3):
+                for attempt in range(max_retries):
+                    try:
+                        comment_area = find_comment_box()
+                        if not comment_area:
+                            raise Exception("Comment box disappeared during action.")
+                        action_fn(comment_area)
+                        return True
+                    except StaleElementReferenceException:
+                        logger.warning(f"[POSTING THREAD] Stale element on attempt {attempt+1}, retrying...")
+                        time.sleep(1)
+                    except Exception as e:
+                        logger.warning(f"[POSTING THREAD] Error on attempt {attempt+1}: {e}")
+                        time.sleep(1)
+                logger.error(f"[POSTING THREAD] Failed action after {max_retries} retries.")
+                return False
+
+            # Click
+            if not safe_action(lambda el: el.click()):
+                return
+            time.sleep(1)
+            # Type comment
+            if not safe_action(lambda el: el.send_keys(comment)):
+                return
+            time.sleep(0.5)
+            # Press RETURN
+            if not safe_action(lambda el: el.send_keys(Keys.RETURN)):
+                return
+            logger.info(f"[POSTING THREAD] Successfully posted comment to: {post_url}")
+            time.sleep(2)
+        except Exception as e:
+            logger.error(f"[POSTING THREAD] Failed to post comment to {post_url}: {e}")
+
+
+    def scrape_authors_and_generate_comments(self, scroll_count=5, pause_time=2):
+        """
+        Scrape Facebook post author names from the current page and generate a personalized comment for each using the class's comment generator.
+        Returns a dict: {author_name: comment}
+        """
+        driver = self.driver
+        author_comments = {}
+
+        # Scroll to load more posts
+        for _ in range(scroll_count):
+            driver.find_element(By.TAG_NAME, "body").send_keys(Keys.END)
+            time.sleep(pause_time)
+
+        articles = driver.find_elements(By.XPATH, "//div[@role='article']")
+
+        for article in articles:
+            name = None
+            try:
+                for tag in ["h2", "h3"]:
+                    spans = article.find_elements(By.XPATH, f".//{tag}//span")
+                    for span in spans:
+                        candidate = span.text.strip()
+                        if candidate:
+                            name = candidate
+                            break
+                    if name:
+                        break
+            except Exception:
+                continue
+
+            if name and name not in author_comments:
+                # Use the class's comment generator for personalization
+                comment = self.comment_generator.personalize_comment("Hi {{author_name}}, thanks for sharing your post!", name)
+                author_comments[name] = comment
+
+        return author_comments
     def __init__(self, config=None):
         self.config = {**CONFIG, **(config or {})}
         self.driver = None
@@ -1365,52 +1507,34 @@ class FacebookAICommentBot:
             return []
     
     def get_post_author(self) -> str:
-        """Extract the author name from the current post with current Facebook selectors"""
+        """Extract the author name from a post using structural selectors + heuristics."""
         try:
-            # Updated selectors based on the provided HTML structure
+            # Structural selectors only (no fragile class names)
             author_selectors = [
-                # Target the specific span with Facebook's current classes
-                "//span[contains(@class, 'x193iq5w') and contains(@class, 'xeuugli')]",
-                "//span[contains(@class, 'x193iq5w')]",
-                "//span[contains(@class, 'xeuugli')]",
-                
-                # More specific - target spans within article that have these classes
-                "//div[@role='article']//span[contains(@class, 'x193iq5w') and contains(@class, 'xeuugli')]",
-                "//div[@role='article']//span[contains(@class, 'x193iq5w')]",
-                
-                # Fallback to original selectors
-                "//div[@role='article']//h3//a[@role='link']",
-                "//div[@role='article']//a[@role='link' and contains(@href, '/profile.php')]",
-                "//div[@role='article']//a[@role='link']//span",
+                "//div[@role='article']//h2//span",
+                "//div[@role='article']//h3//span",
+                "//div[@role='article']//a[@role='link']//span"
             ]
-            
+
             for selector in author_selectors:
                 try:
                     elements = self.driver.find_elements(By.XPATH, selector)
-                    
-                    # Check each element found
                     for element in elements:
-                        if element and element.text.strip():
-                            author_name = element.text.strip()
-                            
-                            # Clean up the author name
-                            author_name = author_name.replace('\n', ' ').strip()
-                            
-                            # Validate it looks like a real name
-                            if self.is_valid_author_name(author_name):
-                                logger.info(f"Found post author using selector '{selector}': {author_name}")
-                                return author_name
-                                
+                        name = element.text.strip()
+                        if name and self.is_valid_author_name(name):
+                            logger.info(f"✅ Found post author: {name}")
+                            return name
                 except Exception as e:
-                    logger.debug(f"Author selector failed: {selector} - {e}")
+                    logger.debug(f"Selector failed: {selector} - {e}")
                     continue
-            
-            logger.warning("Could not extract post author name using any selector")
+
+            logger.warning("⚠️ Could not extract a valid post author name")
             return ""
-            
+
         except Exception as e:
-            logger.error(f"Error extracting post author: {e}")
+            logger.error(f"❌ Error extracting post author: {e}")
             return ""
+
 
     def is_valid_author_name(self, name: str) -> bool:
         """Check if the extracted text looks like a valid author name"""
@@ -1680,9 +1804,35 @@ class FacebookAICommentBot:
         
         return reconstructed
 
+    def extract_first_image_url(self):
+        """
+        Extract the first image URL from the current post (if any). Returns the image URL or an empty string.
+        Adds detailed debug logging for troubleshooting.
+        """
+        try:
+            logger.critical("!!! IMAGE EXTRACTION TEST LOG !!! extract_first_image_url CALLED !!!")
+            logger.info("[Image Extraction] Called extract_first_image_url.")
+            img_elements = self.driver.find_elements(By.XPATH, "//div[@role='article']//img[@src]")
+            logger.info(f"[Image Extraction] Found {len(img_elements)} <img> elements with src.")
+            for idx, img in enumerate(img_elements):
+                src = img.get_attribute('src')
+                logger.info(f"[Image Extraction] img[{idx}] src: {src}")
+                # Filter out emoji, icons, or empty src
+                if src and not src.endswith('emoji') and 'profile' not in src and 'static' not in src:
+                    logger.info(f"[Image Extraction] Returning image src: {src}")
+                    return src
+            logger.info("[Image Extraction] No suitable image found, returning empty string.")
+            return ""
+        except Exception as e:
+            logger.error(f"[Image Extraction] Exception: {e}")
+            return ""
+    
+
     def run(self):
+        logger.critical("!!! TEST LOG: FacebookAICommentBot.run() STARTED !!!")
         try:
             self.setup_driver()
+            self.start_posting_thread()
             url = self.config['POST_URL']
             self.driver.get(url)
             logger.info(f"Loaded Facebook URL: {url}")
@@ -1703,84 +1853,58 @@ class FacebookAICommentBot:
                         retry_count = 0
                         while retry_count < 3:
                             try:
-                                # Try to clean up the URL first (remove tracking parameters)
                                 clean_url = post_url.split('?')[0] if '?' in post_url else post_url
                                 logger.info(f"Cleaned URL: {clean_url}")
-                                
-                                # ADDITIONAL SAFETY CHECK: Block any photo URLs that somehow got through
                                 if '/photo/' in clean_url:
                                     logger.warning(f"🚫 BLOCKING photo URL that got through filtering: {clean_url}")
-                                    self.save_processed_post(post_url, post_text="", post_type="skip", 
-                                                           error_message="Photo URL blocked by safety filter")
+                                    self.save_processed_post(post_url, post_text="", post_type="skip", error_message="Photo URL blocked by safety filter")
                                     break
-                                
-                                # Check if URL is too short (likely broken)
                                 if len(clean_url) < 80:
                                     logger.warning(f"🚫 BLOCKING suspiciously short URL: {clean_url}")
-                                    self.save_processed_post(post_url, post_text="", post_type="skip", 
-                                                           error_message="URL too short - likely broken")
+                                    self.save_processed_post(post_url, post_text="", post_type="skip", error_message="URL too short - likely broken")
                                     break
-                                
                                 self.driver.get(clean_url)
                                 time.sleep(5)
-                                
-                                # Validate post accessibility before processing
                                 if not self.is_post_accessible(clean_url):
                                     logger.info(f"❌ Skipping broken/removed post: {post_url}")
-                                    self.save_processed_post(post_url, post_text="", post_type="skip", 
-                                                           error_message="Post is broken/removed")
+                                    self.save_processed_post(post_url, post_text="", post_type="skip", error_message="Post is broken/removed")
                                     break
-                                
+                                post_image_url = self.extract_first_image_url()
+                                logger.info(f"[CRM Queue] Extracted image URL to send: {post_image_url}")
                                 if not self.is_post_from_today():
                                     logger.info(f"Skipping post not from today: {post_url}")
                                     break
-                                
+                                logger.critical("DEBUG: About to get post text")
                                 post_text = self.get_post_text()
                                 if not post_text.strip():
                                     logger.info(f"No post text found, marking as processed: {post_url}")
                                     self.save_processed_post(post_url, post_text="", error_message="No text extracted")
                                     break
-                                
+                                logger.critical("DEBUG: About to get existing comments")
                                 existing_comments = self.get_existing_comments()
                                 logger.info(f"Found {len(existing_comments)} existing comments")
-                                
-                                # Extract author name for personalized comments
-                                logger.info("🔍 Extracting post author name...")
+                                logger.critical("DEBUG: About to get post author")
                                 post_author = self.get_post_author()
                                 logger.info(f"🔍 Raw author name extracted: '{post_author}' (type: {type(post_author)})")
-                                
                                 if post_author:
                                     logger.info(f"✅ Post author found: {post_author}")
                                 else:
                                     logger.warning("⚠️ No author name extracted, will use generic greeting")
-                                
-                                # Classify the post to determine the appropriate comment type
                                 classification = self.classifier.classify_post(post_text)
                                 logger.info(f"Post classified as: {classification.post_type} (score: {classification.confidence_score:.2f})")
-                                
-                                # Check if we should skip this post
                                 if classification.should_skip:
                                     logger.info(f"Post filtered out. Reasoning: {'; '.join(classification.reasoning)}")
                                     self.save_processed_post(post_url, post_text=post_text, post_type="skip")
                                     break
-                                
-                                # Check if we already commented
                                 if self.duplicate_detector.already_commented(existing_comments):
                                     logger.info("Bravo already commented. Skipping post.")
                                     self.save_processed_post(post_url, post_text=post_text, post_type="skip")
                                     break
-                                
-                                # Generate personalized comment using the updated method
                                 logger.info(f"🔍 Generating comment for type: {classification.post_type}")
                                 logger.info(f"🔍 Using author name: '{post_author}'")
-
-                                # Use the comment generator directly with proper name handling
                                 comment = self.comment_generator.generate_comment(classification.post_type, post_text, post_author)
-
                                 if comment:
                                     logger.info(f"✅ Generated comment: {comment[:100]}...")
-                                    
-                                    # Check if author name was actually used in personalization
                                     if post_author:
                                         first_name = self.comment_generator.extract_first_name(post_author)
                                         if first_name and first_name in comment:
@@ -1793,29 +1917,23 @@ class FacebookAICommentBot:
                                         logger.info(f"ℹ️ Comment generated without author name (generic greeting)")
                                 else:
                                     logger.error("❌ Failed to generate comment")
-                                
                                 if not comment:
                                     logger.info(f"Skipping post (filtered or duplicate): {post_url}")
                                     logger.info(f"Post text length: {len(post_text)} characters")
                                     logger.info(f"Post text preview: {post_text[:200]}...")
                                     self.save_processed_post(post_url, post_text=post_text, post_type="skip")
                                     break
-                                
                                 logger.info(f"Generated comment: {comment[:100]}...")
-                                
-                                # Add to comment queue instead of posting directly
-                                # ENSURE ALL PARAMETERS ARE STRINGS (not lists)
                                 safe_post_url = str(post_url) if post_url else ""
                                 safe_post_text = str(post_text) if post_text else ""
                                 safe_comment_text = str(comment) if comment else ""
                                 safe_post_type = classification.post_type
-                                
                                 logger.info(f"Parameter types before DB call:")
                                 logger.info(f"  post_url: {type(safe_post_url)} = {safe_post_url[:50]}...")
                                 logger.info(f"  post_text: {type(safe_post_text)} = {safe_post_text[:50]}...")
                                 logger.info(f"  comment_text: {type(safe_comment_text)} = {safe_comment_text[:50]}...")
                                 logger.info(f"  post_type: {type(safe_post_type)} = {safe_post_type}")
-                                
+                                logger.info(f"  post_images: {post_image_url}")
                                 try:
                                     queue_id = db.add_to_comment_queue(
                                         post_url=safe_post_url, 
@@ -1823,31 +1941,29 @@ class FacebookAICommentBot:
                                         comment_text=safe_comment_text, 
                                         post_type=safe_post_type,
                                         post_screenshot="",          # ← Use empty string instead of None
-                                        post_images="",              # ← Use empty string instead of None  
+                                        post_images=post_image_url,    # Now set to the extracted image URL
                                         post_author=post_author if post_author else "",  # ← Use actual author name
                                         post_engagement=""           # ← Use empty string instead of None
                                     )
                                     logger.info(f"🔄 Adding comment to approval queue: {post_url}")
                                     logger.info(f"🔄 Adding to comment queue: {safe_post_type} - {safe_post_url[:50]}...")
                                     logger.info(f"📝 Comment text: {safe_comment_text[:50]}...")
+                                    # Send to posting queue for background posting
+                                    self.posting_queue.put((safe_post_url, safe_comment_text))
                                 except Exception as db_error:
                                     logger.error(f"Failed to add comment to queue: {db_error}")
                                     logger.error(f"❌ Failed to add comment to database queue")
                                     logger.error(f"❌ Failed to queue comment for approval: {post_url}")
-                                    # Continue processing instead of crashing
-                                    self.save_processed_post(post_url, post_text=post_text, post_type="service", 
-                                                           error_message=f"Database error: {db_error}")
+                                    self.save_processed_post(post_url, post_text=post_text, post_type="service", error_message=f"Database error: {db_error}")
                                     continue
                                 if queue_id:
                                     logger.info(f"✅ Successfully added comment to queue (ID: {queue_id}): {post_url}")
-                                    self.save_processed_post(post_url, post_text=post_text, post_type="service", 
-                                                           comment_generated=True, comment_text=comment)
+                                    self.save_processed_post(post_url, post_text=post_text, post_type="service", comment_generated=True, comment_text=comment)
                                     new_posts += 1
                                 else:
                                     logger.error(f"❌ Failed to add comment to queue: {post_url}")
-                                    self.save_processed_post(post_url, post_text=post_text, post_type="service", 
-                                                           error_message="Failed to queue comment")
-                                break
+                                    self.save_processed_post(post_url, post_text=post_text, post_type="service", error_message="Failed to queue comment")
+                                # Continue to next post
                             except Exception as e:
                                 if 'stale element reference' in str(e).lower():
                                     logger.warning(f"Stale element error while loading post, retrying ({retry_count+1}/3)...")
@@ -1865,19 +1981,11 @@ class FacebookAICommentBot:
             if self.driver:
                 self.driver.quit()
                 logger.info("Browser closed.")
+            if hasattr(self, 'posting_driver') and self.posting_driver:
+                self.posting_driver.quit()
+                logger.info("Background posting browser closed.")
 
 # Example for testing:
 if __name__ == "__main__":
-    # # Simulate a post and comments
-    # post_text = "ISO: Who makes this ring in stock? Need CAD or casting help."
-    # existing_comments = ["Looks great!", "Bravo Creations can help!"]
-    # post_type = classify_post(post_text)
-    # comment = pick_comment_template(post_type)
-    # if comment:
-    #     print("Bot would comment:", comment)
-    # else:
-    #     print("Bot would skip this post.")
-
-    #
     bot = FacebookAICommentBot()
     bot.run()

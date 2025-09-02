@@ -5,6 +5,7 @@ from typing import Optional, List, Dict, Any
 import asyncio
 import threading
 import time
+import atexit
 import logging
 from datetime import datetime
 import os
@@ -42,6 +43,8 @@ app.add_middleware(
 )
 
 # Global bot instance and status
+
+# Global bot instance and status
 bot_instance = None
 bot_status = {
     "is_running": False,
@@ -52,6 +55,30 @@ bot_status = {
     "comments_queued": 0,
     "current_status": "idle"
 }
+
+# Automatically start the bot and background posting browser on API server startup
+def start_bot_on_launch():
+    global bot_instance, bot_status
+    if bot_instance is None:
+        logger.info("[AUTO-START] Launching FacebookAICommentBot and background posting browser...")
+        bot_instance = FacebookAICommentBot(CONFIG)
+        # Start only the posting thread and driver, not the main scraping loop
+        bot_instance.start_posting_thread()
+        bot_status["is_running"] = True
+        bot_status["start_time"] = datetime.now().isoformat()
+        bot_status["current_status"] = "background posting ready"
+    else:
+        logger.info("[AUTO-START] Bot already initialized.")
+
+def stop_bot_on_exit():
+    global bot_instance
+    if bot_instance:
+        if hasattr(bot_instance, 'posting_driver') and bot_instance.posting_driver:
+            bot_instance.posting_driver.quit()
+            logger.info("[AUTO-STOP] Background posting browser closed.")
+        bot_instance = None
+
+atexit.register(stop_bot_on_exit)
 
 # Comment queue is now handled by the database
 
@@ -1078,28 +1105,37 @@ async def queue_comment(comment_id: str, request: CommentQueueRequest):
 async def submit_comment(comment_id: str, request: CommentSubmitRequest):
     """Submit a comment for immediate real-time posting"""
     try:
-        logger.info(f"🔄 Real-time posting comment {comment_id}")
-        
+        logger.info(f"🔄 Submitting comment {comment_id} to background posting queue")
         # Get the comment details
         comment = get_comment_by_id(comment_id)
         if not comment:
             raise HTTPException(status_code=404, detail="Comment not found")
-        
         if comment.status != "approved":
             raise HTTPException(status_code=400, detail="Comment must be approved before posting")
-        
-        # Post the comment in real-time using existing browser session
-        success = post_comment_realtime(comment_id, comment.post_url, comment.generated_comment)
-        
-        if success:
-            return {
-                "success": True,
-                "message": "Comment posted successfully on Facebook",
-                "comment_id": comment_id
-            }
-        else:
-            raise HTTPException(status_code=500, detail="Failed to post comment on Facebook")
-            
+        # Route posting through the background posting queue
+        global bot_instance, bot_status
+        # If bot is not running, start it in posting-only mode
+        if not bot_instance or not hasattr(bot_instance, 'posting_queue'):
+            logger.warning("Bot instance or posting queue not available, starting posting thread...")
+            from facebook_comment_bot import FacebookAICommentBot
+            from bravo_config import CONFIG
+            bot_instance = FacebookAICommentBot(CONFIG)
+            bot_instance.start_posting_thread()
+            bot_status["is_running"] = True
+            bot_status["current_status"] = "background posting ready"
+        # Add to posting queue (post_url, comment_text)
+        bot_instance.posting_queue.put((comment.post_url, comment.generated_comment))
+        # Optionally, update status in DB to 'posting' or similar
+        try:
+            queue_id = int(comment_id)
+            db.update_comment_status(queue_id, "posting")
+        except Exception as db_error:
+            logger.warning(f"Could not update comment status to 'posting': {db_error}")
+        return {
+            "success": True,
+            "message": "Comment submitted to background posting queue",
+            "comment_id": comment_id
+        }
     except HTTPException:
         raise
     except Exception as e:

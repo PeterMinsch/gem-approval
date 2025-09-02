@@ -7,6 +7,11 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
+# Python/Chrome bot generated files
+bot/chrome_data/
+bot/__pycache__/
+bot/bot_data.db
+
 node_modules
 dist
 dist-ssr
