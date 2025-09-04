@@ -573,6 +573,32 @@ def already_commented(existing_comments: List[str]) -> bool:
     detector = DuplicateDetector(CONFIG)
     return detector.already_commented(existing_comments)
 
+def with_driver_recovery(func):
+    """Decorator to automatically recover from driver connection issues"""
+    def wrapper(self, *args, **kwargs):
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            try:
+                return func(self, *args, **kwargs)
+            except Exception as e:
+                error_msg = str(e).lower()
+                is_connection_error = any(keyword in error_msg for keyword in [
+                    "connection refused", "max retries exceeded", "failed to establish",
+                    "connection broken", "session not created", "chrome not reachable"
+                ])
+                
+                if is_connection_error and attempt < max_attempts - 1:
+                    logger.warning(f"Connection error in {func.__name__}, reconnecting (attempt {attempt + 1}/{max_attempts})...")
+                    try:
+                        self.reconnect_driver_if_needed()
+                        continue
+                    except Exception as reconnect_error:
+                        logger.error(f"Failed to reconnect driver: {reconnect_error}")
+                        
+                raise  # Re-raise the original exception
+        return None
+    return wrapper
+
 class FacebookAICommentBot:
     def extract_first_image_url(self):
         """Extract the first real image URL from the current Facebook post."""
@@ -1074,31 +1100,6 @@ class FacebookAICommentBot:
             self.setup_driver()
             logger.info("Driver reconnection completed")
 
-def with_driver_recovery(func):
-    """Decorator to automatically recover from driver connection issues"""
-    def wrapper(self, *args, **kwargs):
-        max_attempts = 3
-        for attempt in range(max_attempts):
-            try:
-                return func(self, *args, **kwargs)
-            except Exception as e:
-                error_msg = str(e).lower()
-                is_connection_error = any(keyword in error_msg for keyword in [
-                    "connection refused", "max retries exceeded", "failed to establish",
-                    "connection broken", "session not created", "chrome not reachable"
-                ])
-                
-                if is_connection_error and attempt < max_attempts - 1:
-                    logger.warning(f"Connection error in {func.__name__}, reconnecting (attempt {attempt + 1}/{max_attempts})...")
-                    try:
-                        self.reconnect_driver_if_needed()
-                        continue
-                    except Exception as reconnect_error:
-                        logger.error(f"Failed to reconnect driver: {reconnect_error}")
-                        
-                raise  # Re-raise the original exception
-        return None
-    return wrapper
 
     def random_pause(self, min_time=1, max_time=5):
         delay = random.uniform(min_time, max_time)

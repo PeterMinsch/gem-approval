@@ -50,7 +50,8 @@ class CommentGenerator:
         # Try to get templates from database
         if self.database:
             try:
-                db_templates = self.database.get_unified_templates()
+                config_templates = self.config.get("templates", {})
+                db_templates = self.database.get_unified_templates(config_templates)
                 if db_templates:
                     # Convert database format to the expected dict format
                     templates_dict = {}

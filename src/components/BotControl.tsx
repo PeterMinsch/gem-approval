@@ -668,7 +668,6 @@ export const BotControl: React.FC = () => {
         </CardContent>
       </Card>
 
-
       {/* Live Browser View */}
       <Card>
         <CardHeader>

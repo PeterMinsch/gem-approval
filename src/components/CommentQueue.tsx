@@ -22,8 +22,12 @@ import {
   Edit,
   ExternalLink,
   MessageCircle,
+  Image,
+  ChevronDown,
+  ChevronRight,
   //Template,
 } from "lucide-react";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./ui/collapsible";
 
 interface QueuedComment {
   id: string;
@@ -50,6 +54,12 @@ interface TemplateResponse {
   error?: string;
 }
 
+interface ImagePack {
+  id: string;
+  name: string;
+  images: { filename: string; description: string }[];
+}
+
 export const CommentQueue: React.FC = () => {
   const [comments, setComments] = useState<QueuedComment[]>([]);
   const [loading, setLoading] = useState(true);
@@ -60,10 +70,14 @@ export const CommentQueue: React.FC = () => {
   const [showTemplateSelector, setShowTemplateSelector] = useState<
     string | null
   >(null);
+  const [selectedImages, setSelectedImages] = useState<Record<string, string[]>>({});
+  const [showImageSelector, setShowImageSelector] = useState<Record<string, boolean>>({});
+  const [imagePacks, setImagePacks] = useState<ImagePack[]>([]);
 
   useEffect(() => {
     fetchComments();
     fetchTemplates();
+    fetchImagePacks();
     // Auto-refresh every 5 seconds
     const interval = setInterval(fetchComments, 5000);
     return () => clearInterval(interval);
@@ -93,20 +107,46 @@ export const CommentQueue: React.FC = () => {
 
   const fetchTemplates = async () => {
     try {
-      const response = await fetch("http://localhost:8000/comments/templates");
+      const response = await fetch("http://localhost:8000/api/templates");
       if (response.ok) {
-        const data: TemplateResponse = await response.json();
-        if (data.success) {
-          setTemplates(data.templates);
-        }
+        const templatesArray = await response.json();
+        // Convert array to grouped format by category
+        const grouped = templatesArray.reduce((acc: Record<string, Template[]>, template: any) => {
+          const category = template.category || 'GENERIC';
+          if (!acc[category]) {
+            acc[category] = [];
+          }
+          acc[category].push({
+            id: template.id,
+            text: template.body,
+            post_type: category.toLowerCase()
+          });
+          return acc;
+        }, {});
+        setTemplates(grouped);
       }
     } catch (error) {
       console.error("Failed to fetch templates:", error);
     }
   };
 
+  const fetchImagePacks = async () => {
+    try {
+      const response = await fetch('http://localhost:8000/api/image-packs');
+      if (response.ok) {
+        const packs = await response.json();
+        setImagePacks(packs);
+      } else {
+        console.error('Failed to fetch image packs');
+      }
+    } catch (error) {
+      console.error('Error loading image packs:', error);
+    }
+  };
+
   const handleApprove = async (commentId: string) => {
     try {
+      const images = selectedImages[commentId] || [];
       const response = await fetch("http://localhost:8000/comments/approve", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -114,6 +154,7 @@ export const CommentQueue: React.FC = () => {
           comment_id: commentId,
           action: "approve",
           edited_comment: editedText || undefined,
+          images: images.length > 0 ? images : undefined,
         }),
       });
 
@@ -136,6 +177,8 @@ export const CommentQueue: React.FC = () => {
 
         setEditingComment(null);
         setEditedText("");
+        setSelectedImages(prev => ({ ...prev, [commentId]: [] }));
+        setShowImageSelector(prev => ({ ...prev, [commentId]: false }));
         fetchComments(); // Refresh the list
       } else {
         const error = await response.json();
@@ -193,6 +236,23 @@ export const CommentQueue: React.FC = () => {
     setEditedText("");
     setShowTemplateSelector(null);
     setSelectedTemplate("");
+  };
+
+  const handleImageSelect = (commentId: string, filename: string) => {
+    setSelectedImages(prev => {
+      const currentImages = prev[commentId] || [];
+      const newImages = currentImages.includes(filename)
+        ? currentImages.filter(img => img !== filename)
+        : [...currentImages, filename];
+      return { ...prev, [commentId]: newImages };
+    });
+  };
+
+  const toggleImageSelector = (commentId: string) => {
+    setShowImageSelector(prev => ({
+      ...prev,
+      [commentId]: !prev[commentId]
+    }));
   };
 
   // Helper function to personalize template text with first name
@@ -385,11 +445,94 @@ export const CommentQueue: React.FC = () => {
                       </div>
 
                       <div className="mb-3">
-                        <h4 className="font-medium text-sm text-gray-700 mb-1">
-                          Generated Comment:
-                        </h4>
+                        <div className="flex items-center justify-between mb-1">
+                          <h4 className="font-medium text-sm text-gray-700">
+                            Generated Comment:
+                          </h4>
+                          {editingComment === comment.id && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => toggleImageSelector(comment.id)}
+                              className="h-7 px-2"
+                            >
+                              <Image className="h-3 w-3 mr-1" />
+                              Images ({(selectedImages[comment.id] || []).length})
+                            </Button>
+                          )}
+                        </div>
                         {editingComment === comment.id ? (
                           <div className="space-y-3">
+                            {/* Image Pack Selection */}
+                            {showImageSelector[comment.id] && (
+                              <div className="border rounded-md p-3 bg-muted/30 space-y-3">
+                                <h5 className="font-medium text-sm">Select Images to Attach:</h5>
+                                <div className="space-y-2">
+                                  {imagePacks.map(pack => (
+                                    <Collapsible key={pack.id}>
+                                      <CollapsibleTrigger asChild>
+                                        <Button variant="ghost" className="justify-between h-8 w-full px-2 text-left">
+                                          <span className="text-sm font-medium">{pack.name}</span>
+                                          <ChevronRight className="h-4 w-4" />
+                                        </Button>
+                                      </CollapsibleTrigger>
+                                      <CollapsibleContent className="space-y-1 pl-4">
+                                        {pack.images.map(image => (
+                                          <label 
+                                            key={image.filename}
+                                            className="flex items-center space-x-2 cursor-pointer hover:bg-accent/50 rounded p-1"
+                                          >
+                                            <input
+                                              type="checkbox"
+                                              checked={(selectedImages[comment.id] || []).includes(image.filename)}
+                                              onChange={() => handleImageSelect(comment.id, image.filename)}
+                                              className="rounded border-2"
+                                            />
+                                            <div className="text-sm">
+                                              <div className="font-medium">{image.filename.split('/').pop()}</div>
+                                              <div className="text-muted-foreground text-xs">{image.description}</div>
+                                            </div>
+                                          </label>
+                                        ))}
+                                      </CollapsibleContent>
+                                    </Collapsible>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                            
+                            {/* Selected Images Display */}
+                            {(selectedImages[comment.id] || []).length > 0 && (
+                              <div className="space-y-2">
+                                <h5 className="font-medium text-sm">Selected Images:</h5>
+                                <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                                  {(selectedImages[comment.id] || []).map((image, index) => (
+                                    <div key={index} className="relative group">
+                                      <img
+                                        src={image.startsWith('http') ? image : `http://localhost:8000/${image}`}
+                                        alt={image}
+                                        className="w-full h-auto max-h-32 object-contain rounded border border-gray-200 bg-gray-50"
+                                        onError={(e) => {
+                                          const target = e.target as HTMLImageElement;
+                                          target.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='80' viewBox='0 0 120 80'%3E%3Crect width='120' height='80' fill='%23f3f4f6'/%3E%3Ctext x='60' y='45' font-family='Arial' font-size='10' fill='%23666' text-anchor='middle'%3ENo Image%3C/text%3E%3C/svg%3E";
+                                        }}
+                                      />
+                                      <Button
+                                        variant="destructive"
+                                        size="sm"
+                                        onClick={() => handleImageSelect(comment.id, image)}
+                                        className="absolute top-1 right-1 h-6 w-6 p-0 opacity-0 group-hover:opacity-100 transition-opacity"
+                                      >
+                                        ×
+                                      </Button>
+                                      <div className="mt-1 text-xs text-center text-muted-foreground truncate">
+                                        {image.split('/').pop()}
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
                             <div>
                               <label className="text-xs font-medium text-gray-600 block mb-1">
                                 Choose Template (Optional):

@@ -177,14 +177,27 @@ class BotDatabase:
                     post_images TEXT,
                     post_author TEXT,
                     post_engagement TEXT,
+                    image_pack_id TEXT,
                     queued_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     status TEXT DEFAULT 'pending',
                     approved_at TIMESTAMP,
                     approved_by TEXT,
                     posted_at TIMESTAMP,
-                    error_message TEXT
+                    error_message TEXT,
+                    FOREIGN KEY (image_pack_id) REFERENCES image_packs (id)
                 )
             """)
+            
+            # Add image_pack_id column if it doesn't exist (migration)
+            try:
+                cursor.execute("ALTER TABLE comment_queue ADD COLUMN image_pack_id TEXT")
+                logger.info("Added image_pack_id column to comment_queue table")
+            except Exception as e:
+                # Column probably already exists
+                if "duplicate column name" in str(e).lower():
+                    logger.debug("image_pack_id column already exists in comment_queue table")
+                else:
+                    logger.debug(f"Migration note: {e}")
             
             # Bot statistics and sessions tables
             cursor.execute("""
@@ -372,7 +385,8 @@ class BotDatabase:
     
     def add_to_comment_queue(self, post_url: str, post_text: str, comment_text: str, 
                             post_type: str, post_screenshot: str = None, post_images: str = None,
-                            post_author: str = None, post_engagement: str = None) -> Optional[int]:
+                            post_author: str = None, post_engagement: str = None,
+                            image_pack_id: str = None) -> Optional[int]:
         """Add a comment to the approval queue with enhanced post data"""
         try:
             # For photo URLs, preserve parameters; for others, normalize
@@ -388,10 +402,10 @@ class BotDatabase:
                 cursor = conn.cursor()
                 cursor.execute("""
                     INSERT INTO comment_queue (post_url, post_text, comment_text, post_type, 
-                                            post_screenshot, post_images, post_author, post_engagement)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                            post_screenshot, post_images, post_author, post_engagement, image_pack_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (norm_url, post_text, comment_text, post_type, post_screenshot, 
-                     post_images, post_author, post_engagement))
+                     post_images, post_author, post_engagement, image_pack_id))
                 conn.commit()
                 queue_id = cursor.lastrowid
                 logger.info(f"Added comment to queue (ID: {queue_id}): {norm_url}")
@@ -1265,6 +1279,167 @@ class BotDatabase:
                 return True
         except Exception as e:
             logger.error(f"Failed to clear database: {e}")
+            return False
+
+    # Image Pack Management Functions
+    def create_image_pack(self, name: str, category: str) -> str:
+        """Create a new image pack"""
+        import uuid
+        from datetime import datetime
+        
+        image_pack_id = str(uuid.uuid4())
+        
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO image_packs (id, name, images, is_default, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (image_pack_id, name, json.dumps([]), False, datetime.now(), datetime.now()))
+            
+            conn.commit()
+            return image_pack_id
+
+    def get_image_packs(self) -> List[Dict[str, Any]]:
+        """Get all image packs"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM image_packs 
+                ORDER BY created_at DESC
+            """)
+            
+            packs = []
+            for row in cursor.fetchall():
+                pack = dict(row)
+                # Parse images JSON
+                try:
+                    pack['images'] = json.loads(pack['images']) if pack['images'] else []
+                except json.JSONDecodeError:
+                    pack['images'] = []
+                packs.append(pack)
+            return packs
+
+    def get_image_pack_by_id(self, pack_id: str) -> Optional[Dict[str, Any]]:
+        """Get a specific image pack by ID"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM image_packs WHERE id = ?", (pack_id,))
+            
+            row = cursor.fetchone()
+            if row:
+                pack = dict(row)
+                # Parse images JSON
+                try:
+                    pack['images'] = json.loads(pack['images']) if pack['images'] else []
+                except json.JSONDecodeError:
+                    pack['images'] = []
+                return pack
+            return None
+
+    def add_image_to_pack(self, pack_id: str, filename: str, file_path: str) -> bool:
+        """Add an image to an existing image pack"""
+        from datetime import datetime
+        
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Get current images
+            cursor.execute("SELECT images FROM image_packs WHERE id = ?", (pack_id,))
+            row = cursor.fetchone()
+            if not row:
+                return False
+            
+            # Parse current images
+            try:
+                current_images = json.loads(row['images']) if row['images'] else []
+            except json.JSONDecodeError:
+                current_images = []
+            
+            # Add new image path
+            current_images.append(file_path)
+            
+            # Update the pack
+            cursor.execute("""
+                UPDATE image_packs 
+                SET images = ?, updated_at = ?
+                WHERE id = ?
+            """, (json.dumps(current_images), datetime.now(), pack_id))
+            
+            conn.commit()
+            return True
+
+    def delete_image_pack(self, pack_id: str) -> bool:
+        """Delete an image pack and all its images"""
+        import os
+        
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # Get the pack to find image files to delete
+                pack = self.get_image_pack_by_id(pack_id)
+                if not pack:
+                    return False
+                
+                # Delete physical image files
+                for image_path in pack['images']:
+                    full_path = os.path.join(os.getcwd(), image_path)
+                    if os.path.exists(full_path):
+                        try:
+                            os.remove(full_path)
+                            logger.info(f"Deleted image file: {full_path}")
+                        except Exception as e:
+                            logger.warning(f"Failed to delete image file {full_path}: {e}")
+                
+                # Delete from database
+                cursor.execute("DELETE FROM image_packs WHERE id = ?", (pack_id,))
+                
+                # Also clear any template references
+                cursor.execute("UPDATE templates SET image_pack_id = NULL WHERE image_pack_id = ?", (pack_id,))
+                
+                conn.commit()
+                logger.info(f"Deleted image pack {pack_id} and cleared template references")
+                return True
+                
+        except Exception as e:
+            logger.error(f"Failed to delete image pack {pack_id}: {e}")
+            return False
+
+    def delete_image_from_pack(self, pack_id: str, image_path: str) -> bool:
+        """Remove a specific image from a pack"""
+        import os
+        from datetime import datetime
+        
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # Get current images
+                pack = self.get_image_pack_by_id(pack_id)
+                if not pack:
+                    return False
+                
+                # Remove the image from list
+                updated_images = [img for img in pack['images'] if img != image_path]
+                
+                # Update the pack
+                cursor.execute("""
+                    UPDATE image_packs 
+                    SET images = ?, updated_at = ?
+                    WHERE id = ?
+                """, (json.dumps(updated_images), datetime.now(), pack_id))
+                
+                # Delete physical file
+                full_path = os.path.join(os.getcwd(), image_path)
+                if os.path.exists(full_path):
+                    os.remove(full_path)
+                    logger.info(f"Deleted image file: {full_path}")
+                
+                conn.commit()
+                return True
+                
+        except Exception as e:
+            logger.error(f"Failed to delete image {image_path} from pack {pack_id}: {e}")
             return False
 
 # Global database instance

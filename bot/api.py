@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 import asyncio
@@ -117,6 +118,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Mount static files for uploaded images
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+
+# Import and include image pack router
+# from image_pack_api import router as image_pack_router
+# app.include_router(image_pack_router, prefix="/api")
 
 # Global bot instance and status
 
@@ -522,67 +530,8 @@ def reject_comment(comment_id: str, reason: str) -> bool:
 
 
 
-# Bot control functions
-def run_bot_in_background(post_url: str = None, max_scrolls: int = 20, continuous_mode: bool = True, clear_database: bool = False):
-    """Run the bot in a separate thread with comment queuing"""
-    global bot_instance, bot_status
-    
-    try:
-        # Clear logs directory on each run (as requested)
-        logger.info("🧹 Clearing logs directory for fresh start...")
-        if clear_logs_directory():
-            logger.info("✅ Logs directory cleared successfully")
-        else:
-            logger.warning("⚠️ Failed to clear logs directory, continuing with existing logs")
-        
-        # Clear database if requested (for testing purposes)
-        if clear_database:
-            logger.info("Clearing database for fresh start...")
-            if db.clear_all_data():
-                logger.info("Database cleared successfully")
-                # Reset bot status counters
-                bot_status.update({
-                    "posts_processed": 0,
-                    "comments_posted": 0,
-                    "comments_queued": 0
-                })
-            else:
-                logger.warning("Failed to clear database, continuing with existing data")
-        
-        # Update bot status
-        bot_status.update({
-            "is_running": True,
-            "start_time": datetime.now().isoformat(),
-            "last_activity": datetime.now().isoformat(),
-            "current_status": "starting"
-        })
-        
-        # Create bot instance with custom config if post_url provided
-        config = CONFIG.copy()
-        if post_url:
-            config["POST_URL"] = post_url
-        
-        bot_instance = FacebookAICommentBot(config)
-        bot_status["current_status"] = "running"
-        
-        # Run the bot with comment queuing
-        if continuous_mode:
-            run_bot_with_queuing(bot_instance)
-        else:
-            # For single post processing
-            run_bot_with_queuing(bot_instance, max_scrolls)
-            
-    except Exception as e:
-        logger.error(f"Bot execution failed: {e}")
-        bot_status.update({
-            "is_running": False,
-            "current_status": f"error: {str(e)}"
-        })
-    finally:
-        bot_status.update({
-            "is_running": False,
-            "current_status": "stopped"
-        })
+
+
 
 def run_bot_with_queuing(bot_instance: FacebookAICommentBot, max_scrolls: int = None):
     """Run the bot with CRM ingestion instead of old comment queuing"""
@@ -1042,7 +991,9 @@ async def get_comment_templates():
     """Get available comment templates organized by post type (unified from database + config)"""
     try:
         # Get unified templates from database (includes migration from config)
-        db_templates = db.get_unified_templates()
+        from bravo_config import CONFIG
+        config_templates = CONFIG.get("templates", {})
+        db_templates = db.get_unified_templates(config_templates)
         
         # Format templates for frontend use
         formatted_templates = {"service": [], "iso": [], "general": []}
@@ -1405,11 +1356,23 @@ async def get_live_screenshot():
     global bot_instance
     
     try:
+        # Debug: Check bot_instance state before checking driver
+        logger.info(f"DEBUG: bot_instance is None: {bot_instance is None}")
+        if bot_instance:
+            logger.info(f"DEBUG: bot_instance type: {type(bot_instance)}")
+            logger.info(f"DEBUG: bot_instance.driver is None: {bot_instance.driver is None}")
+            logger.info(f"DEBUG: bot_instance methods: {[method for method in dir(bot_instance) if not method.startswith('_')]}")
+        
         if not bot_instance or not bot_instance.driver:
             raise HTTPException(status_code=400, detail="Bot is not running or browser not available")
         
         # Get live screenshot from bot (returns PNG bytes)
-        screenshot_data = bot_instance.get_live_screenshot()
+        # Temporary fix: Use driver directly instead of method
+        if hasattr(bot_instance, 'get_live_screenshot'):
+            screenshot_data = bot_instance.get_live_screenshot()
+        else:
+            logger.error("bot_instance doesn't have get_live_screenshot method, using driver directly")
+            screenshot_data = bot_instance.driver.get_screenshot_as_png()
         
         if screenshot_data:
             # Return as StreamingResponse with image/png media type
@@ -1811,13 +1774,35 @@ async def get_fb_accounts():
         logger.error(f"Error getting Facebook accounts: {e}")
         raise HTTPException(status_code=500, detail="Failed to get Facebook accounts")
 
+# Simple image pack endpoint for frontend
 @app.get("/api/image-packs")
 async def get_image_packs():
-    """Get image packs"""
+    """Get all image packs for frontend"""
     try:
-        # This would need a method to get image packs
-        # For now, return empty array
-        return []
+        packs = db.get_image_packs()
+        
+        # Convert to frontend-compatible format
+        frontend_packs = []
+        for pack in packs:
+            # Handle mixed image formats
+            images = pack.get('images', [])
+            frontend_images = []
+            
+            if images:  # Only process if we have images
+                # If images is a list of objects with filename/description
+                if isinstance(images[0], dict) and 'filename' in images[0]:
+                    frontend_images = images  # Already in correct format
+                # If images is a list of simple strings (file paths)
+                elif isinstance(images[0], str):
+                    frontend_images = [{'filename': img, 'description': img.split('/')[-1]} for img in images]
+            
+            frontend_packs.append({
+                'id': pack['id'],
+                'name': pack['name'], 
+                'images': frontend_images
+            })
+        
+        return frontend_packs
     except Exception as e:
         logger.error(f"Error getting image packs: {e}")
         raise HTTPException(status_code=500, detail="Failed to get image packs")
@@ -1861,6 +1846,21 @@ async def bot_callback(data: Dict[str, Any]):
 @app.on_event("startup")
 async def startup_event():
     """Handle application startup tasks"""
+    global bot_status
+    
+    # Reset bot status to initial stopped state on startup
+    bot_status.clear()
+    bot_status.update({
+        "is_running": False,
+        "start_time": None,
+        "last_activity": None,
+        "posts_processed": 0,
+        "comments_posted": 0,
+        "comments_queued": 0,
+        "current_status": "stopped"
+    })
+    logger.info("✅ Bot status reset to initial stopped state on startup")
+    
     try:
         from bravo_config import CONFIG
         logger.info("🔄 Performing template system migration on startup...")

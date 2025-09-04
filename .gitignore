@@ -12,6 +12,7 @@ bot/__pycache__/
 bot/bot_data.db
 bot/chrome_data_test
 bot/testing
+bot/comments.db
 
 package-lock.json
 package.json
@@ -35,7 +36,11 @@ bot_data.db
 package-lock.json
 package.json
 facebook_bot.db
+test_template.json
+vite.config.ts
 
+# Uploaded files
+uploads/
 
 node_modules
 chrome_data

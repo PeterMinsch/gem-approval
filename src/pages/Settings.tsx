@@ -128,6 +128,15 @@ const Settings = () => {
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [templateToDelete, setTemplateToDelete] = useState<Template | null>(null);
   const [templateSaving, setTemplateSaving] = useState(false);
+  const [imagePackFormOpen, setImagePackFormOpen] = useState(false);
+  const [editingImagePack, setEditingImagePack] = useState<ImagePack | null>(null);
+  const [newImagePack, setNewImagePack] = useState({
+    name: "",
+    category: "GENERIC"
+  });
+  const [imagePackSaving, setImagePackSaving] = useState(false);
+  const [selectedFiles, setSelectedFiles] = useState<FileList | null>(null);
+  const [uploadingImages, setUploadingImages] = useState(false);
 
   useEffect(() => {
     fetchData();
@@ -272,6 +281,133 @@ const Settings = () => {
         (m) => m !== modifier
       ),
     }));
+  };
+
+  // Image pack management functions
+  const handleNewImagePack = () => {
+    setNewImagePack({ name: "", category: "GENERIC" });
+    setEditingImagePack(null);
+    setImagePackFormOpen(true);
+  };
+
+  const handleSaveImagePack = async () => {
+    if (!newImagePack.name.trim()) {
+      toast({
+        title: "Error",
+        description: "Image pack name is required",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setImagePackSaving(true);
+    try {
+      const response = await fetch("/api/image-packs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: newImagePack.name,
+          category: newImagePack.category,
+        }),
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        toast({
+          title: "Success",
+          description: "Image pack created successfully",
+        });
+        
+        // Upload files if selected
+        if (selectedFiles && selectedFiles.length > 0) {
+          await handleImageUpload(result.image_pack_id);
+        }
+        
+        setImagePackFormOpen(false);
+        setSelectedFiles(null);
+        fetchData(); // Refresh data
+      } else {
+        const error = await response.json();
+        throw new Error(error.detail || "Failed to create image pack");
+      }
+    } catch (error) {
+      console.error("Error saving image pack:", error);
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to create image pack",
+        variant: "destructive",
+      });
+    } finally {
+      setImagePackSaving(false);
+    }
+  };
+
+  const handleImageUpload = async (packId: string) => {
+    if (!selectedFiles || selectedFiles.length === 0) return;
+
+    setUploadingImages(true);
+    try {
+      const formData = new FormData();
+      Array.from(selectedFiles).forEach((file) => {
+        formData.append("files", file);
+      });
+      formData.append("category", newImagePack.category);
+
+      const response = await fetch(`/api/image-packs/${packId}/upload`, {
+        method: "POST",
+        body: formData,
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        toast({
+          title: "Success",
+          description: `Successfully uploaded ${result.uploaded_files.length} images`,
+        });
+      } else {
+        const error = await response.json();
+        throw new Error(error.detail || "Failed to upload images");
+      }
+    } catch (error) {
+      console.error("Error uploading images:", error);
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to upload images",
+        variant: "destructive",
+      });
+    } finally {
+      setUploadingImages(false);
+    }
+  };
+
+  const handleDeleteImagePack = async (packId: string) => {
+    if (!confirm("Are you sure you want to delete this image pack? This cannot be undone.")) {
+      return;
+    }
+
+    try {
+      const response = await fetch(`/api/image-packs/${packId}`, {
+        method: "DELETE",
+      });
+
+      if (response.ok) {
+        toast({
+          title: "Success",
+          description: "Image pack deleted successfully",
+        });
+        fetchData(); // Refresh data
+      } else {
+        const error = await response.json();
+        throw new Error(error.detail || "Failed to delete image pack");
+      }
+    } catch (error) {
+      console.error("Error deleting image pack:", error);
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to delete image pack",
+        variant: "destructive",
+      });
+    }
   };
 
   // Template management functions
@@ -629,11 +765,7 @@ const Settings = () => {
                       Manage image collections for comment templates
                     </CardDescription>
                   </div>
-                  <Button
-                    onClick={() => {
-                      /* Handle new image pack */
-                    }}
-                  >
+                  <Button onClick={handleNewImagePack}>
                     <Plus className="h-4 w-4 mr-2" />
                     New Image Pack
                   </Button>
@@ -672,10 +804,24 @@ const Settings = () => {
                         </div>
                       </div>
                       <div className="flex gap-2">
-                        <Button variant="outline" size="sm">
+                        <Button 
+                          variant="outline" 
+                          size="sm"
+                          onClick={() => {
+                            // TODO: Implement edit functionality
+                            toast({
+                              title: "Coming Soon",
+                              description: "Edit functionality will be available in the next update",
+                            });
+                          }}
+                        >
                           <Edit className="h-4 w-4" />
                         </Button>
-                        <Button variant="outline" size="sm">
+                        <Button 
+                          variant="outline" 
+                          size="sm"
+                          onClick={() => handleDeleteImagePack(pack.id)}
+                        >
                           <Trash2 className="h-4 w-4" />
                         </Button>
                       </div>
@@ -955,11 +1101,11 @@ const Settings = () => {
                 onChange={(e) =>
                   setNewTemplate((prev) => ({ ...prev, body: e.target.value }))
                 }
-                placeholder="Enter template text. Use {{author_name}} for personalization, {{phone}} for phone number, {{register_url}} for website, and {{ask_for}} for contact name."
+                placeholder="Enter template text. Use placeholders: {{author_name}}, {{phone}}, {{register_url}}, {{ask_for}}"
                 rows={4}
               />
               <p className="text-sm text-muted-foreground mt-1">
-                Use placeholders: {{author_name}}, {{phone}}, {{register_url}}, {{ask_for}}
+                Use placeholders: {"{"}{"{"} author_name {"}"}{"}"},  {"{"}{"{"} phone {"}"}{"}"},  {"{"}{"{"} register_url {"}"}{"}"},  {"{"}{"{"} ask_for {"}"}{"}"} 
               </p>
             </div>
 
@@ -1010,6 +1156,109 @@ const Settings = () => {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Image Pack Form Dialog */}
+      <Dialog open={imagePackFormOpen} onOpenChange={setImagePackFormOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>
+              {editingImagePack ? "Edit Image Pack" : "Create New Image Pack"}
+            </DialogTitle>
+            <DialogDescription>
+              {editingImagePack
+                ? "Update your image pack details below."
+                : "Create a new image pack and upload images."}
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="space-y-4">
+            <div>
+              <Label htmlFor="imagepack-name">Pack Name</Label>
+              <Input
+                id="imagepack-name"
+                value={newImagePack.name}
+                onChange={(e) =>
+                  setNewImagePack((prev) => ({ ...prev, name: e.target.value }))
+                }
+                placeholder="Enter image pack name"
+              />
+            </div>
+
+            <div>
+              <Label htmlFor="imagepack-category">Category</Label>
+              <Select
+                value={newImagePack.category}
+                onValueChange={(value) =>
+                  setNewImagePack((prev) => ({ ...prev, category: value }))
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Select category" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="GENERIC">Generic</SelectItem>
+                  <SelectItem value="ISO_PIVOT">ISO Pivot</SelectItem>
+                  <SelectItem value="CAD">CAD</SelectItem>
+                  <SelectItem value="CASTING">Casting</SelectItem>
+                  <SelectItem value="SETTING">Setting</SelectItem>
+                  <SelectItem value="ENGRAVING">Engraving</SelectItem>
+                  <SelectItem value="ENAMEL">Enamel</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div>
+              <Label htmlFor="imagepack-files">Upload Images (Optional)</Label>
+              <Input
+                id="imagepack-files"
+                type="file"
+                multiple
+                accept="image/*"
+                onChange={(e) => setSelectedFiles(e.target.files)}
+                className="cursor-pointer"
+              />
+              <p className="text-sm text-muted-foreground mt-1">
+                You can upload images now or add them later. Max 10 images per pack, 5MB each.
+              </p>
+              {selectedFiles && selectedFiles.length > 0 && (
+                <div className="mt-2">
+                  <p className="text-sm font-medium">Selected files:</p>
+                  <div className="text-sm text-muted-foreground">
+                    {Array.from(selectedFiles).map((file, index) => (
+                      <div key={index}>{file.name} ({(file.size / 1024 / 1024).toFixed(2)}MB)</div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setImagePackFormOpen(false);
+                setSelectedFiles(null);
+              }}
+              disabled={imagePackSaving || uploadingImages}
+            >
+              Cancel
+            </Button>
+            <Button 
+              onClick={handleSaveImagePack} 
+              disabled={imagePackSaving || uploadingImages}
+            >
+              {imagePackSaving 
+                ? "Creating..." 
+                : uploadingImages 
+                ? "Uploading..." 
+                : editingImagePack 
+                ? "Update" 
+                : "Create"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };
