@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 import asyncio
@@ -11,6 +12,7 @@ from datetime import datetime
 import os
 import json
 import uuid
+from io import BytesIO
 from selenium.webdriver.common.by import By
 
 from facebook_comment_bot import FacebookAICommentBot
@@ -18,8 +20,82 @@ from bravo_config import CONFIG
 from database import db
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+def setup_api_logger():
+    from logging.handlers import RotatingFileHandler
+    
+    # Ensure the logs directory exists in the project root
+    logs_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'logs')
+    os.makedirs(logs_dir, exist_ok=True)
+    
+    # Use a consistent log filename for rotation
+    log_filename = os.path.join(logs_dir, 'api.log')
+    
+    # Create rotating file handler
+    # maxBytes=20MB, backupCount=3 (API typically logs less than bot)
+    rotating_handler = RotatingFileHandler(
+        log_filename,
+        maxBytes=20*1024*1024,  # 20 MB per file
+        backupCount=3,          # Keep 3 old versions (total ~80MB max)
+        encoding='utf-8'
+    )
+    
+    # Create console handler
+    console_handler = logging.StreamHandler()
+    
+    # Create formatter
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s: %(message)s [%(name)s]')
+    rotating_handler.setFormatter(formatter)
+    console_handler.setFormatter(formatter)
+    
+    # Configure root logger
+    logging.basicConfig(
+        level=logging.INFO,
+        handlers=[rotating_handler, console_handler]
+    )
+    
+    logger_instance = logging.getLogger(__name__)
+    logger_instance.info(f"API logging to: {log_filename}")
+    logger_instance.info(f"Log rotation: 20MB max per file, 3 backup files kept")
+    return logger_instance
+
+logger = setup_api_logger()
+
+def clear_logs_directory():
+    """Clear all log files from the logs directory"""
+    try:
+        logs_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'logs')
+        
+        if not os.path.exists(logs_dir):
+            logger.info("Logs directory doesn't exist, nothing to clear")
+            return True
+        
+        # Get all files in logs directory
+        log_files = []
+        for filename in os.listdir(logs_dir):
+            file_path = os.path.join(logs_dir, filename)
+            if os.path.isfile(file_path):
+                log_files.append((filename, file_path))
+        
+        if not log_files:
+            logger.info("No log files found to clear")
+            return True
+        
+        # Remove each log file
+        cleared_count = 0
+        for filename, file_path in log_files:
+            try:
+                os.remove(file_path)
+                logger.info(f"Cleared log file: {filename}")
+                cleared_count += 1
+            except Exception as e:
+                logger.error(f"Failed to clear log file {filename}: {e}")
+        
+        logger.info(f"✅ Successfully cleared {cleared_count} log files from {logs_dir}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error clearing logs directory: {e}")
+        return False
 
 app = FastAPI(
     title="Bravo Bot API",
@@ -56,20 +132,8 @@ bot_status = {
     "current_status": "idle"
 }
 
-# Automatically start the bot and background posting browser on API server startup
-def start_bot_on_launch():
-    global bot_instance, bot_status
-    if bot_instance is None:
-        logger.info("[AUTO-START] Launching FacebookAICommentBot and background posting browser...")
-        bot_instance = FacebookAICommentBot(CONFIG)
-        # Start only the posting thread and driver, not the main scraping loop
-        bot_instance.start_posting_thread()
-        bot_status["is_running"] = True
-        bot_status["start_time"] = datetime.now().isoformat()
-        bot_status["current_status"] = "background posting ready"
-    else:
-        logger.info("[AUTO-START] Bot already initialized.")
 
+# Remove automatic bot/background browser startup. Only start on /bot/start endpoint.
 def stop_bot_on_exit():
     global bot_instance
     if bot_instance:
@@ -196,58 +260,151 @@ class CommentUpdateRequest(BaseModel):
     comment_body: str
     comment_images: Optional[List[str]] = []
 
-# Comment queue management functions
-def post_comment_realtime(comment_id: str, post_url: str, comment_text: str) -> bool:
-    """Post a comment in real-time using the existing bot's browser session"""
+# Additional Template Models for CRUD operations
+class TemplateCreateRequest(BaseModel):
+    name: str
+    category: str
+    body: str
+    image_pack_id: Optional[str] = None
+    is_default: bool = False
+
+class TemplateUpdateRequestPartial(BaseModel):
+    name: Optional[str] = None
+    category: Optional[str] = None
+    body: Optional[str] = None
+    image_pack_id: Optional[str] = None
+    is_default: Optional[bool] = None
+
+class TemplateResponse(BaseModel):
+    id: str
+    name: str
+    category: str
+    body: str
+    image_pack_id: Optional[str] = None
+    is_default: bool
+    created_at: str
+    updated_at: str
+
+class TemplateDeleteResponse(BaseModel):
+    success: bool
+    message: str
+
+# Pending approvals queue for when bot is initializing
+pending_approvals = []
+
+def queue_approval_for_later(comment_id: str, post_url: str, comment_text: str) -> bool:
+    """Queue an approval for later processing when bot becomes available"""
+    try:
+        approval_data = {
+            "comment_id": comment_id,
+            "post_url": post_url,
+            "comment_text": comment_text,
+            "timestamp": time.time()
+        }
+        pending_approvals.append(approval_data)
+        logger.info(f"📋 Queued approval for comment {comment_id} - will process when bot is ready")
+        
+        # Update comment status to indicate it's waiting for bot
+        try:
+            queue_id = int(comment_id)
+            db.update_comment_status(queue_id, "waiting_for_bot")
+        except Exception as db_error:
+            logger.warning(f"Could not update comment status to 'waiting_for_bot': {db_error}")
+        
+        return True
+    except Exception as e:
+        logger.error(f"Failed to queue approval for later: {e}")
+        return False
+
+def process_pending_approvals():
+    """Process any pending approvals once bot is ready"""
+    global pending_approvals, bot_instance
+    
+    if not bot_instance or not hasattr(bot_instance, 'posting_queue'):
+        return
+    
+    processed_count = 0
+    failed_approvals = []
+    
+    for approval in pending_approvals:
+        try:
+            comment_id = approval["comment_id"]
+            post_url = approval["post_url"]
+            comment_text = approval["comment_text"]
+            
+            logger.info(f"🔄 Processing pending approval for comment {comment_id}")
+            
+            # Try to post now that bot is ready
+            success = post_comment_realtime(comment_id, post_url, comment_text, _from_pending=True)
+            if success:
+                processed_count += 1
+                logger.info(f"✅ Successfully processed pending approval for comment {comment_id}")
+            else:
+                failed_approvals.append(approval)
+                logger.warning(f"⚠️ Failed to process pending approval for comment {comment_id}")
+                
+        except Exception as e:
+            logger.error(f"Error processing pending approval: {e}")
+            failed_approvals.append(approval)
+    
+    # Update pending approvals list (keep failed ones for retry)
+    pending_approvals = failed_approvals
+    
+    if processed_count > 0:
+        logger.info(f"✅ Processed {processed_count} pending approvals")
+
+# Comment queue management functions  
+def post_comment_realtime(comment_id: str, post_url: str, comment_text: str, _from_pending=False) -> bool:
+    """Post a comment in real-time using the dedicated headless posting browser"""
     try:
         global bot_instance
         
+        # Check if bot instance is available with retry logic
         if not bot_instance:
-            logger.error("❌ Bot instance not available for real-time posting")
-            return False
-            
-        if not bot_instance.driver:
-            logger.error("❌ Bot driver not available for real-time posting")
-            return False
-            
-        logger.info(f"✅ Bot instance and driver available for real-time posting")
+            logger.warning("⚠️ Bot instance not yet available, checking bot status...")
+            # Don't queue again if this call is from pending approval processing
+            if _from_pending:
+                logger.error("❌ Bot instance still not available during pending approval processing")
+                return False
+            # Check if bot is still initializing
+            global bot_status
+            if bot_status.get("is_running", False):
+                logger.info("🔄 Bot is initializing, will retry posting in background...")
+                # Queue the approval for later processing when bot is ready
+                return queue_approval_for_later(comment_id, post_url, comment_text)
+            else:
+                logger.error("❌ Bot instance not available and not running")
+                return False
         
-        logger.info(f"🔄 Real-time posting comment {comment_id} on {post_url}")
+        # 🚀 NEW: Use the dedicated posting queue instead of main browser
+        logger.info(f"🚀 Queueing comment {comment_id} for real-time posting via dedicated browser")
         logger.info(f"📝 Comment text: {comment_text[:100] if comment_text else 'None'}...")
         
         try:
-            # Navigate to the post using existing browser session
-            logger.info(f"🔄 Navigating to post URL: {post_url}")
-            bot_instance.driver.get(post_url)
-            time.sleep(3)  # Wait for page to load
-            
-            # Log current URL to verify navigation
-            current_url = bot_instance.driver.current_url
-            logger.info(f"🔄 Current page URL: {current_url}")
-            
-            # Check if we're on the right page
-            if '/posts/' not in current_url:
-                logger.warning(f"⚠️ Navigation may have failed - expected '/posts/' in URL but got: {current_url}")
-            
-            # Use the bot's existing posting method
-            try:
-                bot_instance.post_comment(comment_text, 0)
-                # If we get here, posting was successful
-                # Mark as posted in database
-                queue_id = int(comment_id)
-                db.update_comment_status(queue_id, "posted")
-                bot_status["comments_posted"] += 1
-                logger.info(f"✅ Comment {comment_id} posted successfully in real-time")
-                return True
-            except Exception as posting_error:
-                logger.error(f"❌ Failed to post comment {comment_id}: {posting_error}")
+            # Check if posting infrastructure is available
+            if not hasattr(bot_instance, 'posting_queue'):
+                logger.error("❌ Posting queue not available - bot may not be fully initialized")
                 return False
-                
-        except Exception as e:
-            logger.error(f"❌ Error posting comment {comment_id}: {e}")
-            # Mark as failed
+            
+            # Add to the posting queue with comment ID for tracking
+            # Format: (post_url, comment_text, comment_id)
+            logger.info(f"📤 Adding comment to posting queue: {post_url}")
+            bot_instance.posting_queue.put((post_url, comment_text, comment_id))
+            
+            # Update status to "posting" to indicate we've queued it
             queue_id = int(comment_id)
-            db.update_comment_status(queue_id, "rejected", error_message=str(e))
+            db.update_comment_status(queue_id, "posting")
+            
+            logger.info(f"✅ Comment {comment_id} queued for posting via dedicated browser")
+            
+            # Note: The actual posting happens asynchronously in the background thread
+            # We return True to indicate successful queuing, not successful posting
+            # The background thread will update status to "posted" when complete
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Error queuing comment {comment_id} for posting: {e}")
             return False
             
     except Exception as e:
@@ -371,6 +528,13 @@ def run_bot_in_background(post_url: str = None, max_scrolls: int = 20, continuou
     global bot_instance, bot_status
     
     try:
+        # Clear logs directory on each run (as requested)
+        logger.info("🧹 Clearing logs directory for fresh start...")
+        if clear_logs_directory():
+            logger.info("✅ Logs directory cleared successfully")
+        else:
+            logger.warning("⚠️ Failed to clear logs directory, continuing with existing logs")
+        
         # Clear database if requested (for testing purposes)
         if clear_database:
             logger.info("Clearing database for fresh start...")
@@ -425,6 +589,15 @@ def run_bot_with_queuing(bot_instance: FacebookAICommentBot, max_scrolls: int = 
     global bot_status
     
     try:
+        # 🚀 CRITICAL: Start the posting thread for real-time posting
+        logger.info("🚀 Starting posting thread for real-time comment posting...")
+        bot_instance.start_posting_thread()
+        logger.info("✅ Posting thread started successfully")
+        
+        # 🔄 Process any pending approvals that were queued during initialization
+        logger.info("🔄 Processing any pending approvals...")
+        process_pending_approvals()
+        
         # Import the new CRM ingestion functions
         import requests
         import uuid
@@ -434,61 +607,140 @@ def run_bot_with_queuing(bot_instance: FacebookAICommentBot, max_scrolls: int = 
         def ingest_post_to_crm(clean_url: str, post_text: str):
             """Ingest post into CRM system instead of old comment queue"""
             try:
+                logger.info(f"🔄 Starting CRM ingestion for: {clean_url}")
+                
+                # Add URL/content validation logging
+                if bot_instance and bot_instance.driver:
+                    current_url = bot_instance.driver.current_url
+                    logger.info(f"🔗 URL Validation Check:")
+                    logger.info(f"  📌 Stored URL: {clean_url}")
+                    logger.info(f"  🌐 Current URL: {current_url}")
+                    if clean_url != current_url:
+                        logger.warning(f"⚠️ URL MISMATCH DETECTED!")
+                        logger.warning(f"  Expected: {clean_url}")
+                        logger.warning(f"  Actual:   {current_url}")
+                
+                # Validate text quality before processing
+                logger.info(f"📝 Post text preview: {post_text[:100] if post_text else 'None'}...")
+                
+                # Check text quality
+                if post_text:
+                    words = post_text.split()
+                    if words:
+                        single_chars = len([w for w in words if len(w) == 1 and w.isalnum()])
+                        total_words = len(words)
+                        scrambled_ratio = single_chars / total_words if total_words > 0 else 0
+                        
+                        if scrambled_ratio > 0.5:
+                            logger.error(f"🚨 SCRAMBLED TEXT DETECTED!")
+                            logger.error(f"  Single chars: {single_chars}/{total_words} ({scrambled_ratio:.1%})")
+                            logger.error(f"  Sample: {post_text[:200]}...")
+                            # Still continue but mark the issue
+                        else:
+                            logger.info(f"✅ Text quality check passed: {total_words} words, {scrambled_ratio:.1%} single chars")
+                
                 # Use the bot's classifier to get proper classification
+                logger.info(f"🏷️ Classifying post...")
                 classification = bot_instance.classifier.classify_post(post_text)
+                logger.info(f"✅ Classification complete - Type: {classification.post_type}, Score: {classification.confidence_score}, Skip: {classification.should_skip}")
                 
                 if classification.should_skip:
-                    logger.info(f"Post filtered out: {classification.post_type}")
+                    logger.info(f"⏭️ Post filtered out: {classification.post_type}")
                     return
                 
-                # Generate comment using the bot's comment generator
+                # Extract post author for personalization
+                logger.info(f"👤 Extracting post author for personalization...")
+                post_author_name = ""
+                try:
+                    if bot_instance and bot_instance.driver:
+                        post_author_name = bot_instance.get_post_author()
+                        logger.info(f"✅ Extracted post author: '{post_author_name}'")
+                    else:
+                        logger.warning("⚠️ No bot instance/driver available for author extraction")
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to extract post author: {e}")
+                
+                # Generate comment using the bot's comment generator with author name
                 logger.info(f"🔍 Generating comment for post type: {classification.post_type}")
-                comment = bot_instance.comment_generator.generate_comment(classification.post_type, post_text)
+                comment = bot_instance.comment_generator.generate_comment(classification.post_type, post_text, post_author_name)
+                logger.info(f"✅ Comment generation complete")
                 
                 logger.info(f"📝 Generated comment: {comment[:100] if comment else 'None'}...")
                 
                 if comment:
+                    logger.info(f"💾 Starting metadata capture...")
                     # Try to capture post metadata
                     post_screenshot = None
                     post_images = None
-                    post_author = None
+                    post_author = post_author_name  # Use the extracted author name for personalization
                     post_engagement = None
                     
                     try:
                         if bot_instance and bot_instance.driver:
-                            # Take screenshot of the current post element
-                            post_element = bot_instance.driver.find_element(By.XPATH, "//div[@role='article']")
-                            if post_element:
-                                post_screenshot = post_element.screenshot_as_png
-                                import base64
-                                post_screenshot = f"data:image/png;base64,{base64.b64encode(post_screenshot).decode('utf-8')}"
+                            logger.info(f"🖥️ Driver available, capturing post metadata...")
+                            
+                            # Extract post images using direct selectors (more robust)
+                            try:
+                                logger.info("🖼️ Extracting post images using direct selectors...")
+                                image_selectors = [
+                                    "//img[contains(@src, 'scontent')]",
+                                    "//img[contains(@src, 'fbcdn')]", 
+                                    "//img[contains(@class, 'scaledImageFitWidth')]",
+                                    "//img[contains(@class, 'img')]"
+                                ]
                                 
-                                # Try to extract post author and engagement
-                                try:
-                                    author_elem = post_element.find_element(By.XPATH, ".//a[@role='link' and contains(@href, '/profile.php') or contains(@href, '/')]")
-                                    if author_elem:
-                                        post_author = author_elem.text.strip()
-                                except:
-                                    pass
+                                images = []
+                                for selector in image_selectors:
+                                    img_elements = bot_instance.driver.find_elements(By.XPATH, selector)
+                                    logger.info(f"Selector {selector[:30]}... found {len(img_elements)} images")
+                                    for img in img_elements:
+                                        try:
+                                            src = img.get_attribute('src')
+                                            if src and 'scontent' in src and src not in images:
+                                                images.append(src)
+                                                logger.info(f"✅ Found image: {src[:80]}...")
+                                        except:
+                                            continue
+                                
+                                if images:
+                                    logger.info(f"✅ Successfully extracted {len(images)} images")
+                                    post_images = json.dumps(images)
+                                else:
+                                    logger.info("⚠️ No images found for this post")
+                                    post_images = ""
                                     
-                                try:
-                                    engagement_elem = post_element.find_element(By.XPATH, ".//span[contains(text(), 'like') or contains(text(), 'comment') or contains(text(), 'share')]")
-                                    if engagement_elem:
-                                        post_engagement = engagement_elem.text.strip()
-                                except:
-                                    pass
+                            except Exception as e:
+                                logger.warning(f"Failed to extract post images: {e}")
+                                post_images = ""
+                            
+                            # Try to capture screenshot and metadata (optional, don't fail if article not found)
+                            try:
+                                post_element = bot_instance.driver.find_element(By.XPATH, "//div[@role='article']")
+                                if post_element:
+                                    post_screenshot = post_element.screenshot_as_png
+                                    import base64
+                                    post_screenshot = f"data:image/png;base64,{base64.b64encode(post_screenshot).decode('utf-8')}"
                                     
-                                # Extract post images if any
-                                try:
-                                    img_elements = post_element.find_elements(By.XPATH, ".//img[@src]")
-                                    image_urls = []
-                                    for img in img_elements[:5]:  # Limit to 5 images
-                                        src = img.get_attribute('src')
-                                        if src and 'http' in src:
-                                            image_urls.append(src)
-                                    post_images = json.dumps(image_urls) if image_urls else ""
-                                except:
-                                    pass
+                                    # Try to extract post author using the improved method
+                                    try:
+                                        # Use the bot's improved get_post_author method
+                                        extracted_author = bot_instance.get_post_author()
+                                        if extracted_author:
+                                            post_author = extracted_author
+                                            logger.info(f"✅ Extracted post author: '{post_author}'")
+                                        else:
+                                            logger.warning("⚠️ Could not extract post author")
+                                    except Exception as e:
+                                        logger.debug(f"Author extraction failed: {e}")
+                                        
+                                    try:
+                                        engagement_elem = post_element.find_element(By.XPATH, ".//span[contains(text(), 'like') or contains(text(), 'comment') or contains(text(), 'share')]")
+                                        if engagement_elem:
+                                            post_engagement = engagement_elem.text.strip()
+                                    except:
+                                        pass
+                            except:
+                                logger.info("📸 Article element not found, skipping screenshot and metadata (images still captured)")
                     except Exception as e:
                         logger.warning(f"Failed to capture post visuals: {e}")
                     
@@ -507,9 +759,11 @@ def run_bot_with_queuing(bot_instance: FacebookAICommentBot, max_scrolls: int = 
                     # FIXED: Instead of calling API (which creates circular calls), directly add to comment queue
                     try:
                         logger.info(f"🔄 Adding comment to approval queue: {clean_url}")
+                        logger.info(f"📊 Queue data - Type: {classification.post_type}, Author: {post_author}, Images: {len(post_images) if post_images else 0}")
                         # Add comment directly to the approval queue using the database
                         queue_id = add_comment_to_queue(clean_url, post_text, comment, classification.post_type,
                                                       post_screenshot, post_images, post_author, post_engagement)
+                        logger.info(f"🔄 add_comment_to_queue returned: {queue_id}")
                         
                         if queue_id:
                             logger.info(f"✅ Successfully queued comment for approval (ID: {queue_id}): {post_url}")
@@ -528,10 +782,12 @@ def run_bot_with_queuing(bot_instance: FacebookAICommentBot, max_scrolls: int = 
                             logger.error(f"❌ Complete failure queuing comment: {e2}")
                         
                 else:
-                    logger.warning(f"Could not generate comment for post type: {classification.post_type}")
+                    logger.warning(f"❌ Could not generate comment for post type: {classification.post_type}")
                     
             except Exception as e:
-                logger.error(f"Error processing post for CRM ingestion: {e}")
+                logger.error(f"💥 Error processing post for CRM ingestion: {e}")
+                import traceback
+                logger.error(f"💥 Traceback: {traceback.format_exc()}")
         
         # Actually open Chrome and start scanning Facebook
         logger.info("Opening Chrome browser and navigating to Facebook...")
@@ -542,93 +798,143 @@ def run_bot_with_queuing(bot_instance: FacebookAICommentBot, max_scrolls: int = 
             bot_instance.setup_driver()
             logger.info("Chrome browser opened successfully")
             
-            # Navigate to the target Facebook group
+            # Navigate to the target Facebook group or specific post
             target_url = bot_instance.config.get("POST_URL", "https://www.facebook.com/groups/5440421919361046")
             logger.info(f"Navigating to: {target_url}")
             
             bot_instance.driver.get(target_url)
-            logger.info("Successfully navigated to Facebook group")
+            logger.info("Successfully navigated to Facebook")
             
-            # Start scanning for posts
-            logger.info("Starting to scan for posts...")
+            # Check if we're targeting a specific post URL
+            is_specific_post = "/posts/" in target_url
             
-            # Keep running and scanning
-            while bot_status["is_running"]:
+            if is_specific_post:
+                # Process the specific post directly
+                logger.info("Processing specific post directly...")
+                time.sleep(8)  # Wait for page to load
+                
+                # Clean the URL
+                clean_url = target_url.split('?')[0] if '?' in target_url else target_url
+                
                 try:
-                    # Actually scan for new posts using the bot's real methods
-                    logger.info("Scanning for new posts...")
-                    
-                    # Use the bot's actual post scanning method
-                    post_links = bot_instance.scroll_and_collect_post_links(max_scrolls=5)
-                    logger.info(f"Found {len(post_links)} potential posts to scan")
-                    
-                    # Process each post found
-                    for post_url in post_links:
-                        if not bot_status["is_running"]:
-                            break
+                    # Extract post text
+                    post_text = bot_instance.get_post_text()
+                    if post_text and post_text.strip():
+                        logger.info(f"📝 Extracted post text: {post_text[:100]}...")
+                        # Process this post through CRM ingestion
+                        ingest_post_to_crm(clean_url, post_text)
+                    else:
+                        logger.warning("No post text found on specific post page")
                         
-                        # Clean the URL for processing (remove query parameters)
-                        clean_url = post_url.split('?')[0] if '?' in post_url else post_url
-                        
-                        if db.is_post_processed(clean_url):
-                            logger.info(f"Skipping already processed post: {clean_url}")
-                            continue
-                        
-                        logger.info(f"🔍 Processing post: {clean_url}")
-                        logger.info(f"📊 Total posts found: {len(post_links)}, Current: {post_links.index(post_url) + 1}")
-                    
-                        try:
-                            # Navigate to the post
-                            bot_instance.driver.get(clean_url)
-                            time.sleep(5)
-                            
-                            # Check if post is from today
-                            if not bot_instance.is_post_from_today():
-                                logger.info(f"Skipping post not from today: {clean_url}")
-                                bot_instance.save_processed_post(clean_url, post_text="", error_message="Not from today")
-                                continue
-                            
-                            # Extract post text
-                            post_text = bot_instance.get_post_text()
-                            if not post_text.strip():
-                                logger.info(f"No post text found, marking as processed: {clean_url}")
-                                bot_instance.save_processed_post(clean_url, post_text="", error_message="No text extracted")
-                                continue
-                            
-                            # Check for existing comments
-                            existing_comments = bot_instance.get_existing_comments()
-                            logger.info(f"Found {len(existing_comments)} existing comments")
-                            
-                            # Check if we already commented
-                            if bot_instance.already_commented(existing_comments):
-                                logger.info(f"Already commented on this post: {clean_url}")
-                                bot_instance.save_processed_post(clean_url, post_text=post_text, post_type="already_commented")
-                                continue
-                            
-                            # Check for duplicates
-                            if bot_instance.is_duplicate_post(post_text, clean_url):
-                                logger.info(f"Duplicate post detected: {clean_url}")
-                                bot_instance.save_processed_post(clean_url, post_text=post_text, post_type="duplicate")
-                                continue
-                            
-                            # Ingest post into CRM
-                            ingest_post_to_crm(clean_url, post_text)
-                            
-                            # Mark as processed
-                            bot_instance.save_processed_post(clean_url, post_text=post_text, post_type="processed")
-                            
-                        except Exception as e:
-                            logger.error(f"Error processing post {clean_url}: {e}")
-                            bot_instance.save_processed_post(clean_url, post_text="", error_message=str(e))
-                            continue
-                    
-                    # Wait before next scan (reduced for testing)
-                    logger.info("Scan cycle complete. Starting next scan in 30 seconds...")
-                    time.sleep(30)
-                    
                 except Exception as e:
-                    logger.error(f"Error during scanning: {e}")
-                    time.sleep(60)  # Wait a minute before retrying
+                    logger.error(f"Error processing specific post: {e}")
+                    
+                # Exit after processing the specific post
+                bot_status["is_running"] = False
+                
+            else:
+                # Start scanning for posts in group mode
+                logger.info("Starting to scan for posts...")
+                
+                # Keep running and scanning
+                while bot_status["is_running"]:
+                    try:
+                        # Actually scan for new posts using the bot's real methods
+                        logger.info("Scanning for new posts...")
+                        
+                        # Use the bot's actual post scanning method
+                        post_links = bot_instance.scroll_and_collect_post_links(max_scrolls=5)
+                        logger.info(f"Found {len(post_links)} potential posts to scan")
+                        
+                        # Process each post found
+                        for post_url in post_links:
+                            if not bot_status["is_running"]:
+                                break
+                            
+                            # For photo URLs, preserve fbid and set parameters
+                            if '/photo/' in post_url and 'fbid=' in post_url:
+                                # Keep photo URLs mostly intact, remove only tracking parameters
+                                import re
+                                clean_url = re.sub(r'&(__cft__|__tn__|notif_id|notif_t|ref)=[^&]*', '', post_url)
+                                clean_url = re.sub(r'&context=[^&]*', '', clean_url)
+                            else:
+                                # For non-photo URLs, remove all query parameters  
+                                clean_url = post_url.split('?')[0] if '?' in post_url else post_url
+                            
+                            if db.is_post_processed(clean_url):
+                                logger.info(f"Skipping already processed post: {clean_url}")
+                                continue
+                            
+                            logger.info(f"🔍 Processing post: {clean_url}")
+                            logger.info(f"📊 Total posts found: {len(post_links)}, Current: {post_links.index(post_url) + 1}")
+                        
+                            try:
+                                # Navigate to the post
+                                bot_instance.driver.get(clean_url)
+                                time.sleep(5)
+                                
+                                # Check if post is from today
+                                if not bot_instance.is_post_from_today():
+                                    logger.info(f"Skipping post not from today: {clean_url}")
+                                    bot_instance.save_processed_post(clean_url, post_text="", error_message="Not from today")
+                                    continue
+                                
+                                # Extract post text
+                                post_text = bot_instance.get_post_text()
+                                if not post_text.strip():
+                                    logger.info(f"No post text found, marking as processed: {clean_url}")
+                                    bot_instance.save_processed_post(clean_url, post_text="", error_message="No text extracted")
+                                    continue
+                                
+                                # Check for existing comments
+                                existing_comments = bot_instance.get_existing_comments()
+                                logger.info(f"Found {len(existing_comments)} existing comments")
+                                
+                                # Check if we already commented
+                                if bot_instance.already_commented(existing_comments):
+                                    logger.info(f"Already commented on this post: {clean_url}")
+                                    bot_instance.save_processed_post(clean_url, post_text=post_text, post_type="already_commented")
+                                    continue
+                                
+                                # Check for duplicates
+                                if bot_instance.is_duplicate_post(post_text, clean_url):
+                                    logger.info(f"Duplicate post detected: {clean_url}")
+                                    bot_instance.save_processed_post(clean_url, post_text=post_text, post_type="duplicate")
+                                    continue
+                                
+                                # Ingest post into CRM
+                                ingest_post_to_crm(clean_url, post_text)
+                                
+                                # Mark as processed
+                                bot_instance.save_processed_post(clean_url, post_text=post_text, post_type="processed")
+                                
+                            except Exception as e:
+                                logger.error(f"Error processing post {clean_url}: {e}")
+                                bot_instance.save_processed_post(clean_url, post_text="", error_message=str(e))
+                                continue
+                        
+                        # Wait before next scan (reduced for testing)
+                        logger.info("Scan cycle complete. Starting next scan in 30 seconds...")
+                        time.sleep(30)
+                        
+                    except Exception as e:
+                        logger.error(f"Error during scanning: {e}")
+                        
+                        # Add connection recovery logic
+                        if ("connection refused" in str(e).lower() or 
+                            "max retries exceeded" in str(e).lower() or
+                            "failed to establish" in str(e).lower() or
+                            "connection broken" in str(e).lower()):
+                            logger.warning("Connection error detected, attempting to restart browser...")
+                            try:
+                                if bot_instance:
+                                    bot_instance.reconnect_driver_if_needed()
+                                    logger.info("Browser reconnected successfully")
+                                    continue  # Skip the sleep and retry immediately
+                            except Exception as reconnect_error:
+                                logger.error(f"Failed to reconnect browser: {reconnect_error}")
+                        
+                        time.sleep(60)  # Wait a minute before retrying
                     
         except Exception as e:
             logger.error(f"Error setting up Chrome or navigating: {e}")
@@ -641,20 +947,41 @@ def run_bot_with_queuing(bot_instance: FacebookAICommentBot, max_scrolls: int = 
             logger.info("Chrome browser closed")
 
 def stop_bot():
-    """Stop the running bot"""
+    """Stop the running bot and properly cleanup"""
     global bot_instance, bot_status
     
-    if bot_instance and bot_instance.driver:
-        try:
-            bot_instance.driver.quit()
-            bot_status["current_status"] = "stopping"
-        except Exception as e:
-            logger.error(f"Error stopping bot: {e}")
+    logger.info("🛑 Stopping bot...")
+    bot_status["current_status"] = "stopping"
     
+    if bot_instance:
+        try:
+            # Stop the posting thread if it exists
+            if hasattr(bot_instance, 'stop_posting_thread'):
+                logger.info("Stopping posting thread...")
+                bot_instance.stop_posting_thread()
+            
+            # Close the main browser
+            if bot_instance.driver:
+                logger.info("Closing main browser...")
+                bot_instance.driver.quit()
+                
+            # Close the posting browser if it exists
+            if hasattr(bot_instance, 'posting_driver') and bot_instance.posting_driver:
+                logger.info("Closing posting browser...")
+                bot_instance.posting_driver.quit()
+                
+        except Exception as e:
+            logger.error(f"Error during bot cleanup: {e}")
+    
+    # Reset bot instance and status - CRITICAL FIX: Don't set to None, allow restart
+    bot_instance = None
     bot_status.update({
         "is_running": False,
-        "current_status": "stopped"
+        "current_status": "stopped",
+        "last_activity": datetime.now().isoformat()
     })
+    
+    logger.info("✅ Bot stopped successfully")
 
 # API endpoints
 @app.get("/")
@@ -664,32 +991,36 @@ async def root():
 @app.post("/bot/start", response_model=Dict[str, str])
 async def start_bot(request: BotStartRequest, background_tasks: BackgroundTasks):
     """Start the Facebook comment bot with comment queuing"""
-    global bot_status
-    
+    global bot_instance, bot_status
     if bot_status["is_running"]:
         raise HTTPException(status_code=400, detail="Bot is already running")
-    
-    # Start bot in background
-    background_tasks.add_task(
-        run_bot_in_background,
-        post_url=request.post_url,
-        max_scrolls=request.max_scrolls,
-        continuous_mode=request.continuous_mode,
-        clear_database=request.clear_database
-    )
-    
-    return {"message": "Bot started successfully with comment queuing", "status": "starting"}
+
+    # Prepare config
+    config = CONFIG.copy()
+    if request.post_url:
+        config["POST_URL"] = request.post_url
+
+    # Start the bot using the proper background method with CRM ingestion
+    background_tasks.add_task(run_bot_in_background, 
+                            request.post_url, 
+                            request.max_scrolls, 
+                            request.continuous_mode, 
+                            request.clear_database)
+
+    return {"message": "Bot started successfully (run() called)", "status": "starting"}
 
 @app.post("/bot/stop", response_model=Dict[str, str])
 async def stop_bot_endpoint(request: BotStopRequest):
-    """Stop the running bot"""
+    """Stop the running bot - allows restart afterwards"""
     global bot_status
     
     if not bot_status["is_running"]:
-        raise HTTPException(status_code=400, detail="Bot is not running")
+        # Don't throw error - allow stop even if already stopped (idempotent)
+        logger.info("Bot is already stopped")
+        return {"message": "Bot is already stopped"}
     
     stop_bot()
-    return {"message": "Bot stopped successfully"}
+    return {"message": "Bot stopped successfully. You can now start it again."}
 
 @app.get("/bot/status", response_model=BotStatusResponse)
 async def get_bot_status():
@@ -706,6 +1037,61 @@ async def get_comment_history():
     """Get comment history (approved, rejected, posted)"""
     return db.get_comment_history()
 
+@app.get("/comments/templates")
+async def get_comment_templates():
+    """Get available comment templates organized by post type (unified from database + config)"""
+    try:
+        # Get unified templates from database (includes migration from config)
+        db_templates = db.get_unified_templates()
+        
+        # Format templates for frontend use
+        formatted_templates = {"service": [], "iso": [], "general": []}
+        
+        # Map database categories to frontend post types
+        category_to_type = {
+            "GENERIC": "general",
+            "ISO_PIVOT": "iso", 
+            "SERVICE_REQUEST": "service"
+        }
+        
+        if db_templates:
+            for template in db_templates:
+                post_type = category_to_type.get(template.get("category"), "general")
+                formatted_templates[post_type].append({
+                    "id": template["id"],
+                    "text": template["body"],
+                    "post_type": post_type
+                })
+        
+        # If no database templates, fallback to config templates
+        if not db_templates or not any(formatted_templates.values()):
+            logger.info("⚠️ No database templates found, using config fallback")
+            from bravo_config import CONFIG
+            config_templates = CONFIG.get("templates", {})
+            
+            for post_type, template_list in config_templates.items():
+                if post_type in formatted_templates:
+                    formatted_templates[post_type] = [
+                        {
+                            "id": f"config_{post_type}_{i}",
+                            "text": template,
+                            "post_type": post_type
+                        }
+                        for i, template in enumerate(template_list)
+                    ]
+        
+        return {
+            "success": True,
+            "templates": formatted_templates
+        }
+    except Exception as e:
+        logger.error(f"Error getting templates: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "templates": {}
+        }
+
 @app.post("/comments/approve", response_model=CommentApprovalResponse)
 async def approve_comment_endpoint(request: CommentApprovalRequest):
     """Approve, reject, or edit a comment"""
@@ -714,11 +1100,38 @@ async def approve_comment_endpoint(request: CommentApprovalRequest):
             success = approve_comment(request.comment_id, request.edited_comment)
             if success:
                 comment = get_comment_by_id(request.comment_id)
-                return CommentApprovalResponse(
-                    success=True,
-                    message="Comment approved successfully",
-                    comment=comment
-                )
+                
+                # 🚀 NEW: Automatically trigger real-time posting after approval
+                logger.info(f"🚀 Auto-posting approved comment {request.comment_id} in real-time...")
+                try:
+                    # Get the final comment text (could be edited)
+                    final_comment_text = request.edited_comment or comment.generated_comment
+                    
+                    # Post comment in real-time using the existing function
+                    posting_success = post_comment_realtime(request.comment_id, comment.post_url, final_comment_text)
+                    
+                    if posting_success:
+                        logger.info(f"✅ Comment {request.comment_id} approved and queued for posting!")
+                        return CommentApprovalResponse(
+                            success=True,
+                            message="Comment approved and queued for posting to Facebook! Check status in a few seconds.",
+                            comment=comment
+                        )
+                    else:
+                        logger.warning(f"⚠️ Comment {request.comment_id} approved but failed to queue for posting")
+                        return CommentApprovalResponse(
+                            success=True,
+                            message="Comment approved but failed to queue for posting - check bot logs",
+                            comment=comment
+                        )
+                        
+                except Exception as posting_error:
+                    logger.error(f"❌ Error posting approved comment {request.comment_id}: {posting_error}")
+                    return CommentApprovalResponse(
+                        success=True,
+                        message="Comment approved but posting encountered an error - check bot logs",
+                        comment=comment
+                    )
             else:
                 raise HTTPException(status_code=404, detail="Comment not found")
                 
@@ -742,11 +1155,35 @@ async def approve_comment_endpoint(request: CommentApprovalRequest):
             success = approve_comment(request.comment_id, request.edited_comment)
             if success:
                 comment = get_comment_by_id(request.comment_id)
-                return CommentApprovalResponse(
-                    success=True,
-                    message="Comment edited and approved successfully",
-                    comment=comment
-                )
+                
+                # 🚀 NEW: Automatically trigger real-time posting after edit+approve
+                logger.info(f"🚀 Auto-posting edited comment {request.comment_id} in real-time...")
+                try:
+                    # Post the edited comment in real-time
+                    posting_success = post_comment_realtime(request.comment_id, comment.post_url, request.edited_comment)
+                    
+                    if posting_success:
+                        logger.info(f"✅ Comment {request.comment_id} edited and queued for posting!")
+                        return CommentApprovalResponse(
+                            success=True,
+                            message="Comment edited and queued for posting to Facebook! Check status in a few seconds.",
+                            comment=comment
+                        )
+                    else:
+                        logger.warning(f"⚠️ Comment {request.comment_id} edited but failed to queue for posting")
+                        return CommentApprovalResponse(
+                            success=True,
+                            message="Comment edited but failed to queue for posting - check bot logs",
+                            comment=comment
+                        )
+                        
+                except Exception as posting_error:
+                    logger.error(f"❌ Error posting edited comment {request.comment_id}: {posting_error}")
+                    return CommentApprovalResponse(
+                        success=True,
+                        message="Comment edited but posting encountered an error - check bot logs",
+                        comment=comment
+                    )
             else:
                 raise HTTPException(status_code=404, detail="Comment not found")
         else:
@@ -971,14 +1408,21 @@ async def get_live_screenshot():
         if not bot_instance or not bot_instance.driver:
             raise HTTPException(status_code=400, detail="Bot is not running or browser not available")
         
-        # Get live screenshot from bot
+        # Get live screenshot from bot (returns PNG bytes)
         screenshot_data = bot_instance.get_live_screenshot()
         
         if screenshot_data:
-            return screenshot_data
+            # Return as StreamingResponse with image/png media type
+            return StreamingResponse(
+                BytesIO(screenshot_data), 
+                media_type="image/png",
+                headers={"Content-Disposition": "inline; filename=screenshot.png"}
+            )
         else:
             raise HTTPException(status_code=500, detail="Failed to capture screenshot")
         
+    except HTTPException:
+        raise  # Re-raise HTTP exceptions as-is
     except Exception as e:
         logger.error(f"Error getting live screenshot: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to get live screenshot: {str(e)}")
@@ -1038,6 +1482,23 @@ async def clear_database():
     except Exception as e:
         logger.error(f"Error during database clear: {e}")
         raise HTTPException(status_code=500, detail="Database clear failed: {str(e)}")
+
+@app.post("/bot/logs/clear")
+async def clear_logs():
+    """Clear all log files from the logs directory"""
+    try:
+        success = clear_logs_directory()
+        if success:
+            return {
+                "success": True,
+                "message": "Logs directory cleared successfully. All log files removed for fresh start.",
+                "timestamp": datetime.now().isoformat()
+            }
+        else:
+            raise HTTPException(status_code=500, detail="Logs clear failed")
+    except Exception as e:
+        logger.error(f"Error during logs clear: {e}")
+        raise HTTPException(status_code=500, detail=f"Logs clear failed: {str(e)}")
 
 @app.get("/api/comment-history")
 async def get_comment_history():
@@ -1113,16 +1574,10 @@ async def submit_comment(comment_id: str, request: CommentSubmitRequest):
         if comment.status != "approved":
             raise HTTPException(status_code=400, detail="Comment must be approved before posting")
         # Route posting through the background posting queue
-        global bot_instance, bot_status
-        # If bot is not running, start it in posting-only mode
+        global bot_instance
         if not bot_instance or not hasattr(bot_instance, 'posting_queue'):
-            logger.warning("Bot instance or posting queue not available, starting posting thread...")
-            from facebook_comment_bot import FacebookAICommentBot
-            from bravo_config import CONFIG
-            bot_instance = FacebookAICommentBot(CONFIG)
-            bot_instance.start_posting_thread()
-            bot_status["is_running"] = True
-            bot_status["current_status"] = "background posting ready"
+            logger.error("❌ Bot instance or posting queue not available for background posting")
+            raise HTTPException(status_code=500, detail="Bot is not running or posting queue unavailable")
         # Add to posting queue (post_url, comment_text)
         bot_instance.posting_queue.put((comment.post_url, comment.generated_comment))
         # Optionally, update status in DB to 'posting' or similar
@@ -1211,19 +1666,110 @@ async def get_templates(category: Optional[str] = None):
         logger.error(f"Error getting templates: {e}")
         raise HTTPException(status_code=500, detail="Failed to get templates")
 
-@app.post("/api/templates")
-async def create_template(request: TemplateUpdateRequest):
+@app.post("/api/templates", response_model=TemplateResponse)
+async def create_template(request: TemplateCreateRequest):
     """Create a new template"""
     try:
-        # This would need a method to create templates
-        # For now, return success
-        return {
-            "success": True,
-            "message": "Template creation not yet implemented"
-        }
+        template_id = db.create_template(
+            name=request.name,
+            category=request.category,
+            body=request.body,
+            image_pack_id=request.image_pack_id,
+            is_default=request.is_default
+        )
+        
+        # Get the created template to return it
+        created_template = db.get_template(template_id)
+        if not created_template:
+            raise HTTPException(status_code=500, detail="Failed to retrieve created template")
+        
+        return TemplateResponse(**created_template)
+    
+    except ValueError as e:
+        logger.error(f"Validation error creating template: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Error creating template: {e}")
         raise HTTPException(status_code=500, detail="Failed to create template")
+
+@app.put("/api/templates/{template_id}", response_model=TemplateResponse)
+async def update_template(template_id: str, request: TemplateUpdateRequestPartial):
+    """Update an existing template"""
+    try:
+        success = db.update_template(
+            template_id=template_id,
+            name=request.name,
+            category=request.category,
+            body=request.body,
+            image_pack_id=request.image_pack_id,
+            is_default=request.is_default
+        )
+        
+        if not success:
+            raise HTTPException(status_code=404, detail="Template not found")
+        
+        # Get the updated template to return it
+        updated_template = db.get_template(template_id)
+        if not updated_template:
+            raise HTTPException(status_code=500, detail="Failed to retrieve updated template")
+        
+        return TemplateResponse(**updated_template)
+    
+    except ValueError as e:
+        logger.error(f"Validation error updating template: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error updating template: {e}")
+        raise HTTPException(status_code=500, detail="Failed to update template")
+
+@app.delete("/api/templates/{template_id}", response_model=TemplateDeleteResponse)
+async def delete_template(template_id: str):
+    """Delete a template"""
+    try:
+        success = db.delete_template(template_id)
+        
+        if not success:
+            raise HTTPException(status_code=404, detail="Template not found")
+        
+        return TemplateDeleteResponse(
+            success=True,
+            message="Template deleted successfully"
+        )
+    
+    except ValueError as e:
+        logger.error(f"Validation error deleting template: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error deleting template: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete template")
+
+@app.post("/api/templates/refresh", response_model=Dict[str, str])
+async def refresh_templates():
+    """Refresh templates in comment generator from database"""
+    try:
+        global bot_instance
+        if bot_instance and hasattr(bot_instance, 'comment_generator'):
+            bot_instance.comment_generator.refresh_templates()
+            return {"success": True, "message": "Templates refreshed successfully"}
+        else:
+            return {"success": False, "message": "Bot not available for template refresh"}
+    except Exception as e:
+        logger.error(f"Error refreshing templates: {e}")
+        raise HTTPException(status_code=500, detail="Failed to refresh templates")
+
+@app.get("/api/templates/statistics")
+async def get_template_statistics():
+    """Get template usage statistics from comment generator"""
+    try:
+        global bot_instance
+        if bot_instance and hasattr(bot_instance, 'comment_generator'):
+            stats = bot_instance.comment_generator.get_template_statistics()
+            return stats
+        else:
+            return {"message": "Bot not available for template statistics"}
+    except Exception as e:
+        logger.error(f"Error getting template statistics: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get template statistics")
 
 @app.get("/api/settings")
 async def get_settings():
@@ -1311,6 +1857,26 @@ async def bot_callback(data: Dict[str, Any]):
     except Exception as e:
         logger.error(f"Error processing bot callback: {e}")
         raise HTTPException(status_code=500, detail="Failed to process callback")
+
+@app.on_event("startup")
+async def startup_event():
+    """Handle application startup tasks"""
+    try:
+        from bravo_config import CONFIG
+        logger.info("🔄 Performing template system migration on startup...")
+        
+        # Migrate config templates to database if they don't exist
+        config_templates = CONFIG.get("templates", {})
+        migrated_count = db.migrate_config_templates(config_templates)
+        
+        if migrated_count > 0:
+            logger.info(f"✅ Migrated {migrated_count} config templates to database")
+        else:
+            logger.info("ℹ️ No new templates to migrate - all config templates already in database")
+            
+    except Exception as e:
+        logger.error(f"❌ Error during startup migration: {e}")
+        # Don't fail startup for migration errors - system should still work
 
 if __name__ == "__main__":
     import uvicorn

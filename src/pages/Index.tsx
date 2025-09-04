@@ -1,4 +1,5 @@
 import { BotControl } from "../components/BotControl";
+import { CommentQueue } from "../components/CommentQueue";
 import { Button } from "@/components/ui/button";
 import { RefreshCw, Bot, Settings, MessageSquare } from "lucide-react";
 import { Link } from "react-router-dom";
@@ -73,6 +74,11 @@ const Index = () => {
               </h2>
             </div>
             <BotControl />
+          </div>
+
+          {/* Comment Approval Queue Section */}
+          <div className="mt-8 mb-8">
+            <CommentQueue />
           </div>
 
           {/* Info Section */}

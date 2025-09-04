@@ -21,6 +21,24 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
   Settings as SettingsIcon,
   FileText,
   Image,
@@ -106,6 +124,10 @@ const Settings = () => {
     image_pack_id: "",
     is_default: false,
   });
+  const [templateFormOpen, setTemplateFormOpen] = useState(false);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [templateToDelete, setTemplateToDelete] = useState<Template | null>(null);
+  const [templateSaving, setTemplateSaving] = useState(false);
 
   useEffect(() => {
     fetchData();
@@ -250,6 +272,122 @@ const Settings = () => {
         (m) => m !== modifier
       ),
     }));
+  };
+
+  // Template management functions
+  const handleNewTemplate = () => {
+    setNewTemplate({
+      name: "",
+      category: "GENERIC",
+      body: "",
+      image_pack_id: "",
+      is_default: false,
+    });
+    setEditingTemplate(null);
+    setTemplateFormOpen(true);
+  };
+
+  const handleEditTemplate = (template: Template) => {
+    setNewTemplate({
+      name: template.name,
+      category: template.category,
+      body: template.body,
+      image_pack_id: template.image_pack_id || "",
+      is_default: template.is_default,
+    });
+    setEditingTemplate(template);
+    setTemplateFormOpen(true);
+  };
+
+  const handleSaveTemplate = async () => {
+    if (!newTemplate.name.trim() || !newTemplate.body.trim()) {
+      toast({
+        title: "Error",
+        description: "Template name and body are required",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setTemplateSaving(true);
+    try {
+      const url = editingTemplate
+        ? `/api/templates/${editingTemplate.id}`
+        : "/api/templates";
+      const method = editingTemplate ? "PUT" : "POST";
+
+      const payload = {
+        name: newTemplate.name,
+        category: newTemplate.category,
+        body: newTemplate.body,
+        image_pack_id: newTemplate.image_pack_id || null,
+        is_default: newTemplate.is_default,
+      };
+
+      const response = await fetch(url, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (response.ok) {
+        toast({
+          title: "Success",
+          description: editingTemplate
+            ? "Template updated successfully"
+            : "Template created successfully",
+        });
+        setTemplateFormOpen(false);
+        fetchData(); // Refresh the template list
+      } else {
+        const error = await response.json();
+        throw new Error(error.detail || "Failed to save template");
+      }
+    } catch (error) {
+      console.error("Error saving template:", error);
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to save template",
+        variant: "destructive",
+      });
+    } finally {
+      setTemplateSaving(false);
+    }
+  };
+
+  const handleDeleteTemplate = (template: Template) => {
+    setTemplateToDelete(template);
+    setDeleteConfirmOpen(true);
+  };
+
+  const confirmDeleteTemplate = async () => {
+    if (!templateToDelete) return;
+
+    try {
+      const response = await fetch(`/api/templates/${templateToDelete.id}`, {
+        method: "DELETE",
+      });
+
+      if (response.ok) {
+        toast({
+          title: "Success",
+          description: "Template deleted successfully",
+        });
+        setDeleteConfirmOpen(false);
+        setTemplateToDelete(null);
+        fetchData(); // Refresh the template list
+      } else {
+        const error = await response.json();
+        throw new Error(error.detail || "Failed to delete template");
+      }
+    } catch (error) {
+      console.error("Error deleting template:", error);
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to delete template",
+        variant: "destructive",
+      });
+    }
   };
 
   if (loading) {
@@ -432,7 +570,7 @@ const Settings = () => {
                       Manage comment templates for different post types
                     </CardDescription>
                   </div>
-                  <Button onClick={() => setEditingTemplate({} as Template)}>
+                  <Button onClick={handleNewTemplate}>
                     <Plus className="h-4 w-4 mr-2" />
                     New Template
                   </Button>
@@ -461,16 +599,14 @@ const Settings = () => {
                         <Button
                           variant="outline"
                           size="sm"
-                          onClick={() => setEditingTemplate(template)}
+                          onClick={() => handleEditTemplate(template)}
                         >
                           <Edit className="h-4 w-4" />
                         </Button>
                         <Button
                           variant="outline"
                           size="sm"
-                          onClick={() => {
-                            /* Handle delete */
-                          }}
+                          onClick={() => handleDeleteTemplate(template)}
                         >
                           <Trash2 className="h-4 w-4" />
                         </Button>
@@ -760,6 +896,120 @@ const Settings = () => {
           </TabsContent>
         </Tabs>
       </div>
+
+      {/* Template Form Dialog */}
+      <Dialog open={templateFormOpen} onOpenChange={setTemplateFormOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>
+              {editingTemplate ? "Edit Template" : "Create New Template"}
+            </DialogTitle>
+            <DialogDescription>
+              {editingTemplate
+                ? "Update your template details below."
+                : "Create a new comment template with personalization."}
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="space-y-4">
+            <div>
+              <Label htmlFor="template-name">Template Name</Label>
+              <Input
+                id="template-name"
+                value={newTemplate.name}
+                onChange={(e) =>
+                  setNewTemplate((prev) => ({ ...prev, name: e.target.value }))
+                }
+                placeholder="Enter template name"
+              />
+            </div>
+
+            <div>
+              <Label htmlFor="template-category">Category</Label>
+              <Select
+                value={newTemplate.category}
+                onValueChange={(value) =>
+                  setNewTemplate((prev) => ({ ...prev, category: value }))
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Select category" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="GENERIC">Generic</SelectItem>
+                  <SelectItem value="ISO_PIVOT">ISO Pivot</SelectItem>
+                  <SelectItem value="CAD">CAD</SelectItem>
+                  <SelectItem value="CASTING">Casting</SelectItem>
+                  <SelectItem value="SETTING">Setting</SelectItem>
+                  <SelectItem value="ENGRAVING">Engraving</SelectItem>
+                  <SelectItem value="ENAMEL">Enamel</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div>
+              <Label htmlFor="template-body">Template Body</Label>
+              <Textarea
+                id="template-body"
+                value={newTemplate.body}
+                onChange={(e) =>
+                  setNewTemplate((prev) => ({ ...prev, body: e.target.value }))
+                }
+                placeholder="Enter template text. Use {{author_name}} for personalization, {{phone}} for phone number, {{register_url}} for website, and {{ask_for}} for contact name."
+                rows={4}
+              />
+              <p className="text-sm text-muted-foreground mt-1">
+                Use placeholders: {{author_name}}, {{phone}}, {{register_url}}, {{ask_for}}
+              </p>
+            </div>
+
+            <div className="flex items-center space-x-2">
+              <Switch
+                id="template-default"
+                checked={newTemplate.is_default}
+                onCheckedChange={(checked) =>
+                  setNewTemplate((prev) => ({ ...prev, is_default: checked }))
+                }
+              />
+              <Label htmlFor="template-default">Set as default template</Label>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setTemplateFormOpen(false)}
+              disabled={templateSaving}
+            >
+              Cancel
+            </Button>
+            <Button onClick={handleSaveTemplate} disabled={templateSaving}>
+              {templateSaving ? "Saving..." : editingTemplate ? "Update" : "Create"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete Confirmation Dialog */}
+      <AlertDialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Template</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to delete "{templateToDelete?.name}"? This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={confirmDeleteTemplate}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 };

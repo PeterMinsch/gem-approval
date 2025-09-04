@@ -336,10 +336,19 @@ class BotDatabase:
         """, (str(uuid.uuid4()), 'Default Account', 'https://facebook.com', 'ACTIVE', 8))
     
     def is_post_processed(self, post_url: str) -> bool:
-        """Check if a post has already been processed"""
+        """Check if a post has already been processed. Always use normalized URL."""
+        # For photo URLs, preserve fbid and set parameters but remove tracking
+        if '/photo/' in post_url and 'fbid=' in post_url:
+            import re
+            # Remove tracking parameters but keep fbid and set
+            norm_url = re.sub(r'&(__cft__|__tn__|notif_id|notif_t|ref)=[^&]*', '', post_url)
+            norm_url = re.sub(r'&context=[^&]*', '', norm_url)
+        else:
+            # For non-photo URLs, remove all query parameters
+            norm_url = post_url.split('?')[0].split('#')[0] if post_url else post_url
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT id FROM processed_posts WHERE post_url = ?", (post_url,))
+            cursor.execute("SELECT id FROM processed_posts WHERE post_url = ?", (norm_url,))
             return cursor.fetchone() is not None
     
     def mark_post_processed(self, post_url: str, post_text: str = "", post_type: str = "", 
@@ -366,17 +375,26 @@ class BotDatabase:
                             post_author: str = None, post_engagement: str = None) -> Optional[int]:
         """Add a comment to the approval queue with enhanced post data"""
         try:
+            # For photo URLs, preserve parameters; for others, normalize
+            if '/photo/' in post_url and 'fbid=' in post_url:
+                # Photo URLs need their parameters to work properly
+                norm_url = post_url
+                logger.info(f"Preserving photo URL with parameters: {norm_url}")
+            else:
+                # Normalize URL by removing query parameters and fragments
+                norm_url = post_url.split('?')[0].split('#')[0] if post_url else post_url
+                logger.info(f"Normalized non-photo URL: {norm_url}")
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
                     INSERT INTO comment_queue (post_url, post_text, comment_text, post_type, 
                                             post_screenshot, post_images, post_author, post_engagement)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """, (post_url, post_text, comment_text, post_type, post_screenshot, 
+                """, (norm_url, post_text, comment_text, post_type, post_screenshot, 
                      post_images, post_author, post_engagement))
                 conn.commit()
                 queue_id = cursor.lastrowid
-                logger.info(f"Added comment to queue (ID: {queue_id}): {post_url}")
+                logger.info(f"Added comment to queue (ID: {queue_id}): {norm_url}")
                 return queue_id
         except Exception as e:
             logger.error(f"Failed to add comment to queue: {e}")
@@ -619,6 +637,226 @@ class BotDatabase:
             cursor.execute("SELECT * FROM templates WHERE is_default = TRUE LIMIT 1")
             row = cursor.fetchone()
             return dict(row) if row else None
+    
+    def create_template(self, name: str, category: str, body: str, image_pack_id: str = None, is_default: bool = False) -> str:
+        """Create a new template"""
+        import uuid
+        from datetime import datetime
+        
+        template_id = str(uuid.uuid4())
+        
+        # Validate category
+        valid_categories = ['GENERIC', 'ISO_PIVOT', 'CAD', 'CASTING', 'SETTING', 'ENGRAVING', 'ENAMEL']
+        if category not in valid_categories:
+            raise ValueError(f"Invalid category. Must be one of: {', '.join(valid_categories)}")
+        
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Check if template name already exists
+            cursor.execute("SELECT COUNT(*) FROM templates WHERE name = ?", (name,))
+            if cursor.fetchone()[0] > 0:
+                raise ValueError(f"Template with name '{name}' already exists")
+            
+            # If this is set as default, unset other defaults in same category
+            if is_default:
+                cursor.execute(
+                    "UPDATE templates SET is_default = FALSE WHERE category = ? AND is_default = TRUE",
+                    (category,)
+                )
+            
+            cursor.execute("""
+                INSERT INTO templates (id, name, category, body, image_pack_id, is_default, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (template_id, name, category, body, image_pack_id, is_default, datetime.now(), datetime.now()))
+            
+            conn.commit()
+            return template_id
+    
+    def update_template(self, template_id: str, name: str = None, category: str = None, 
+                       body: str = None, image_pack_id: str = None, is_default: bool = None) -> bool:
+        """Update an existing template"""
+        from datetime import datetime
+        
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Check if template exists
+            cursor.execute("SELECT * FROM templates WHERE id = ?", (template_id,))
+            existing = cursor.fetchone()
+            if not existing:
+                return False
+            
+            # Build update query dynamically
+            updates = []
+            params = []
+            
+            if name is not None:
+                # Check if new name conflicts with existing templates (excluding current)
+                cursor.execute("SELECT COUNT(*) FROM templates WHERE name = ? AND id != ?", (name, template_id))
+                if cursor.fetchone()[0] > 0:
+                    raise ValueError(f"Template with name '{name}' already exists")
+                updates.append("name = ?")
+                params.append(name)
+            
+            if category is not None:
+                valid_categories = ['GENERIC', 'ISO_PIVOT', 'CAD', 'CASTING', 'SETTING', 'ENGRAVING', 'ENAMEL']
+                if category not in valid_categories:
+                    raise ValueError(f"Invalid category. Must be one of: {', '.join(valid_categories)}")
+                updates.append("category = ?")
+                params.append(category)
+                
+                # If changing category and this was default, unset default
+                if existing['is_default'] and category != existing['category']:
+                    updates.append("is_default = ?")
+                    params.append(False)
+            
+            if body is not None:
+                updates.append("body = ?")
+                params.append(body)
+            
+            if image_pack_id is not None:
+                updates.append("image_pack_id = ?")
+                params.append(image_pack_id)
+            
+            if is_default is not None:
+                # If setting as default, unset other defaults in same category
+                if is_default:
+                    current_category = category if category is not None else existing['category']
+                    cursor.execute(
+                        "UPDATE templates SET is_default = FALSE WHERE category = ? AND is_default = TRUE AND id != ?",
+                        (current_category, template_id)
+                    )
+                updates.append("is_default = ?")
+                params.append(is_default)
+            
+            if not updates:
+                return True  # No changes needed
+            
+            updates.append("updated_at = ?")
+            params.append(datetime.now())
+            params.append(template_id)
+            
+            query = f"UPDATE templates SET {', '.join(updates)} WHERE id = ?"
+            cursor.execute(query, params)
+            conn.commit()
+            
+            return cursor.rowcount > 0
+    
+    def delete_template(self, template_id: str) -> bool:
+        """Delete a template"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Check if template exists
+            cursor.execute("SELECT * FROM templates WHERE id = ?", (template_id,))
+            template = cursor.fetchone()
+            if not template:
+                return False
+            
+            # Check if template is being used by any comments
+            cursor.execute("SELECT COUNT(*) FROM comments WHERE template_id = ?", (template_id,))
+            usage_count = cursor.fetchone()[0]
+            
+            if usage_count > 0:
+                raise ValueError(f"Cannot delete template: it is used by {usage_count} comment(s)")
+            
+            cursor.execute("DELETE FROM templates WHERE id = ?", (template_id,))
+            conn.commit()
+            
+            return cursor.rowcount > 0
+
+    def migrate_config_templates(self, config_templates: Dict[str, List[str]]) -> int:
+        """Migrate config-based templates to database if they don't already exist"""
+        import uuid
+        from datetime import datetime
+        
+        migrated_count = 0
+        
+        # Mapping of config post types to database categories
+        category_mapping = {
+            "service": "GENERIC",
+            "iso": "ISO_PIVOT", 
+            "general": "GENERIC"
+        }
+        
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            for post_type, template_list in config_templates.items():
+                category = category_mapping.get(post_type, "GENERIC")
+                
+                for i, template_text in enumerate(template_list):
+                    # Create a descriptive name for the template
+                    template_name = f"Config {post_type.title()} Template {i+1}"
+                    
+                    # Check if this template already exists (by name or exact body match)
+                    cursor.execute("""
+                        SELECT COUNT(*) FROM templates 
+                        WHERE name = ? OR body = ?
+                    """, (template_name, template_text))
+                    
+                    if cursor.fetchone()[0] == 0:
+                        # Template doesn't exist, create it
+                        template_id = str(uuid.uuid4())
+                        
+                        cursor.execute("""
+                            INSERT INTO templates (id, name, category, body, image_pack_id, is_default, created_at, updated_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (
+                            template_id,
+                            template_name,
+                            category,
+                            template_text,
+                            None,
+                            False,  # Config templates are not default
+                            datetime.now(),
+                            datetime.now()
+                        ))
+                        
+                        migrated_count += 1
+            
+            conn.commit()
+        
+        return migrated_count
+
+    def get_templates_by_post_type(self, post_type: str) -> List[str]:
+        """Get templates for a specific post type (for backward compatibility)"""
+        # Mapping of post types to database categories
+        category_mapping = {
+            "service": "GENERIC",
+            "iso": "ISO_PIVOT", 
+            "general": "GENERIC"
+        }
+        
+        category = category_mapping.get(post_type, "GENERIC")
+        
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT body FROM templates 
+                WHERE category = ? 
+                ORDER BY is_default DESC, created_at ASC
+            """, (category,))
+            
+            return [row[0] for row in cursor.fetchall()]
+
+    def get_unified_templates(self, config_templates: Dict[str, List[str]]) -> Dict[str, List[str]]:
+        """Get unified templates (database + config fallback)"""
+        unified_templates = {}
+        
+        for post_type in ["service", "iso", "general"]:
+            # Get database templates first
+            db_templates = self.get_templates_by_post_type(post_type)
+            
+            if db_templates:
+                # Use database templates if available
+                unified_templates[post_type] = db_templates
+            else:
+                # Fallback to config templates
+                unified_templates[post_type] = config_templates.get(post_type, [])
+        
+        return unified_templates
     
     def get_settings(self) -> Dict[str, Any]:
         """Get application settings"""

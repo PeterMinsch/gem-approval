@@ -72,42 +72,27 @@ const CRM = () => {
     }, 5000); // Refresh every 5 seconds
 
     return () => clearInterval(interval);
-  }, [loading]);
+  }, []);
 
   const fetchPosts = async () => {
-    console.log("🔍 fetchPosts called");
     try {
-      console.log("📡 Making API call to /comments/queue");
       const response = await fetch("http://localhost:8000/comments/queue");
-      console.log("📡 API response status:", response.status);
 
       if (response.ok) {
         const data = await response.json();
-        console.log("📡 Fetched comments data:", data);
-        console.log("📡 Data length:", data.length);
 
         if (data && Array.isArray(data)) {
           setPosts(data);
-          console.log(
-            "💾 Comments state updated with real data:",
-            data.length,
-            "comments"
-          );
         } else {
-          console.log(
-            "⚠️ API returned invalid data format, setting empty posts"
-          );
           setPosts([]);
         }
       } else {
-        console.log("⚠️ API returned error status:", response.status);
         setPosts([]);
       }
     } catch (error) {
-      console.error("💥 Error fetching comments:", error);
+      console.error("Error fetching comments:", error);
       setPosts([]);
     } finally {
-      console.log("🏁 Setting loading to false");
       setLoading(false);
     }
   };

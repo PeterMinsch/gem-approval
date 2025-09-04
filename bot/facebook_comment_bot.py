@@ -10,13 +10,26 @@ from io import BytesIO
 import os
 import random
 import time
+import threading
+import queue
+import time
+import os
+print("RUNNING FILE:", os.path.abspath(__file__))
+import pytesseract
+from PIL import Image
+import requests
+from io import BytesIO
+import os
+import random
+import time
 import logging
 from datetime import datetime
 import re
+import json
 import uuid
 from typing import Dict, List, Tuple, Optional, Set
 from dataclasses import dataclass
-
+from dotenv import load_dotenv
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
@@ -25,17 +38,11 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import (
-    TimeoutException,
-    NoSuchElementException
-)
+from selenium.common.exceptions import TimeoutException, NoSuchElementException, StaleElementReferenceException, WebDriverException
 from webdriver_manager.chrome import ChromeDriverManager
-from dotenv import load_dotenv
-
 from bravo_config import CONFIG
 from database import db
-
-load_dotenv()
+from comment_generator import CommentGenerator as ExternalCommentGenerator
 
 # Enhanced configuration for weighted scoring
 KEYWORD_WEIGHTS = {
@@ -46,7 +53,6 @@ KEYWORD_WEIGHTS = {
     "general": 3,          # General keyword weight (reduced from 5)
     "modifier": 15,        # Allowed brand modifier weight
 }
-
 # Post type thresholds
 POST_TYPE_THRESHOLDS = {
     "service": 15,         # Lowered from 25 - more posts will qualify as service
@@ -317,8 +323,8 @@ class CommentGenerator:
             # Get OpenAI configuration
             openai_config = self.config.get("openai", {})
             
-            # Make API call using correct OpenAI syntax
-            response = self.openai_client.ChatCompletion.create(
+            # Make API call using NEW v1.x+ syntax
+            response = self.openai_client.chat.completions.create(
                 model=openai_config.get("model", "gpt-4o-mini"),
                 messages=[
                     {"role": "system", "content": prompt}
@@ -326,7 +332,8 @@ class CommentGenerator:
                 max_tokens=openai_config.get("max_tokens", 150),
                 temperature=openai_config.get("temperature", 0.7)
             )
-            comment = response.choices[0].message['content'].strip() if hasattr(response.choices[0], 'message') else response.choices[0].text.strip()
+            
+            comment = response.choices[0].message.content.strip()
             logger.info(f"🤖 LLM generated comment: {comment[:100]}...")
             return comment
             
@@ -381,7 +388,7 @@ class CommentGenerator:
             logger.info(f"❌ Skipping name that contains UI elements: {full_name}")
             return ""
         
-        # Extract first name (first word)
+        # Extract first name (skip common titles)
         name_parts = full_name.split()
         logger.info(f"🔍 Name parts: {name_parts}")
         
@@ -389,7 +396,15 @@ class CommentGenerator:
             logger.warning(f"❌ No name parts found after splitting: {full_name}")
             return ""
         
+        # Skip common titles and prefixes
+        titles_to_skip = ['dr.', 'dr', 'mr.', 'mr', 'mrs.', 'mrs', 'ms.', 'ms', 'prof.', 'prof', 'rev.', 'rev']
+        
         first_name = name_parts[0]
+        # If first part is a title and we have more parts, use the second part
+        if len(name_parts) > 1 and first_name.lower().rstrip('.') in titles_to_skip:
+            first_name = name_parts[1]
+            logger.info(f"🔍 Skipped title '{name_parts[0]}', using: '{first_name}'")
+        
         logger.info(f"🔍 First name part: '{first_name}'")
         
         # Validate first name
@@ -502,17 +517,42 @@ class DuplicateDetector:
         return False  # Could implement more sophisticated similarity checking
 
 def setup_logger():
-    os.makedirs('logs', exist_ok=True)
-    log_filename = f'logs/facebook_comment_bot_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s: %(message)s',
-        handlers=[
-            logging.FileHandler(log_filename, encoding='utf-8'),
-            logging.StreamHandler()
-        ]
+    from logging.handlers import RotatingFileHandler
+    
+    # Ensure the logs directory exists in the project root
+    logs_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'logs')
+    os.makedirs(logs_dir, exist_ok=True)
+    
+    # Use a consistent log filename for rotation
+    log_filename = os.path.join(logs_dir, 'facebook_comment_bot.log')
+    
+    # Create rotating file handler
+    # maxBytes=50MB, backupCount=5 (keeps 5 old versions)
+    rotating_handler = RotatingFileHandler(
+        log_filename, 
+        maxBytes=50*1024*1024,  # 50 MB per file
+        backupCount=5,          # Keep 5 old versions (total ~250MB max)
+        encoding='utf-8'
     )
-    return logging.getLogger(__name__)
+    
+    # Create console handler
+    console_handler = logging.StreamHandler()
+    
+    # Create formatter
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s: %(message)s [%(name)s]')
+    rotating_handler.setFormatter(formatter)
+    console_handler.setFormatter(formatter)
+    
+    # Configure root logger
+    logging.basicConfig(
+        level=logging.DEBUG,
+        handlers=[rotating_handler, console_handler]
+    )
+    
+    logger_instance = logging.getLogger(__name__)
+    logger_instance.info(f"Logging to: {log_filename}")
+    logger_instance.info(f"Log rotation: 50MB max per file, 5 backup files kept")
+    return logger_instance
 
 logger = setup_logger()
 
@@ -525,7 +565,7 @@ def classify_post(text: str) -> str:
 
 def pick_comment_template(post_type: str, author_name: str = "") -> str:
     """Legacy wrapper for backward compatibility"""
-    generator = CommentGenerator(CONFIG)
+    generator = ExternalCommentGenerator(CONFIG, database=db)
     return generator.generate_comment(post_type, "", author_name)
 
 def already_commented(existing_comments: List[str]) -> bool:
@@ -534,23 +574,56 @@ def already_commented(existing_comments: List[str]) -> bool:
     return detector.already_commented(existing_comments)
 
 class FacebookAICommentBot:
-    def setup_posting_driver(self):
-        """Set up a second, headless browser for posting comments."""
+    def extract_first_image_url(self):
+        """Extract the first real image URL from the current Facebook post."""
         try:
+            post_element = self.driver.find_element(By.XPATH, "//div[@role='article']")
+            img_elements = post_element.find_elements(By.TAG_NAME, "img")
+            for img in img_elements:
+                src = img.get_attribute("src")
+                # Skip emojis, SVGs, icons, and profile images
+                if not src:
+                    continue
+                if any(x in src for x in ["emoji", ".svg", "profile", "static"]):
+                    continue
+                # Facebook CDN images are usually real post images
+                if src.startswith("https://scontent") and src.endswith(".jpg"):
+                    return src
+                # Accept other http(s) images that aren't SVGs or emojis
+                if src.startswith("http") and not any(x in src for x in ["emoji", ".svg", "profile", "static"]):
+                    return src
+            return None
+        except Exception as e:
+            print(f"Error extracting image: {e}")
+            return None
+    def setup_posting_driver(self):
+        """Set up a second browser for posting comments (non-headless for Facebook compatibility)."""
+        try:
+            # Set environment for Chrome stability
+            os.environ['CHROME_LOG_FILE'] = 'nul'
+            
             chrome_options = Options()
-            chrome_options.add_argument("--headless=new")
-            chrome_options.add_argument("--disable-popup-blocking")
+            # Use same options as main browser but in a minimized window
+            chrome_options.add_argument("--no-sandbox")
+            chrome_options.add_argument("--disable-dev-shm-usage")
+            # REMOVED --headless=new as Facebook blocks headless browsers
+            chrome_options.add_argument("--disable-blink-features=AutomationControlled")
             chrome_options.add_argument("--disable-notifications")
-            chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+            chrome_options.add_argument("--disable-popup-blocking")
+            chrome_options.add_argument("--start-minimized")  # Start minimized instead of headless
+            chrome_options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
             chrome_options.add_experimental_option('useAutomationExtension', False)
-            chrome_options.binary_location = "C:/Program Files/Google/Chrome/Application/chrome.exe"
-            user_data_dir = os.path.join(os.getcwd(), "chrome_data")
+            # Suppress Chrome log noise
+            chrome_options.add_argument("--log-level=3")  # Only fatal errors
+            chrome_options.add_argument("--silent")
+            # Use a separate profile directory for the posting browser
+            # This avoids conflicts with the main browser
+            user_data_dir = os.path.join(os.getcwd(), "chrome_data_posting")
             chrome_options.add_argument(f"--user-data-dir={user_data_dir}")
-            chrome_options.add_argument(f"--profile-directory={self.config['CHROME_PROFILE']}")
-            chrome_options.add_argument("--window-size=1920,1080")
+            chrome_options.add_argument(f"--profile-directory=Default")
             service = Service(ChromeDriverManager().install())
             self.posting_driver = webdriver.Chrome(service=service, options=chrome_options)
-            logger.info("Background posting Chrome driver set up (headless mode).")
+            logger.info("Background posting Chrome driver set up (minimized window mode).")
         except Exception as e:
             logger.error(f"Failed to setup background posting Chrome Driver: {e}")
             self.posting_driver = None
@@ -558,23 +631,110 @@ class FacebookAICommentBot:
     def start_posting_thread(self):
         """Start a background thread to post comments from the queue."""
         self.posting_queue = queue.Queue()
+        
+        # Initialize window manager after driver is setup
+        # Will be initialized in the worker thread when driver is available
+        self.posting_manager = None
+        
         self.posting_thread = threading.Thread(target=self._posting_worker, daemon=True)
         self.posting_thread.start()
         logger.info("Background posting thread started.")
 
     def _posting_worker(self):
-        """Worker function for the posting thread."""
-        self.setup_posting_driver()
+        """Optimized worker function for the posting thread."""
+        # Wait for main driver to be available with shorter polling
+        retry_count = 0
+        while retry_count < 30:  # Try for up to 30 seconds
+            if hasattr(self, 'driver') and self.driver:
+                # Initialize window manager once driver is available
+                try:
+                    from posting_window_manager import WindowPostingManager
+                    self.posting_manager = WindowPostingManager(self.driver, self.config)
+                    logger.info("[POSTING THREAD] Window-based posting manager initialized successfully")
+                    break
+                except Exception as e:
+                    logger.error(f"[POSTING THREAD] Failed to initialize posting manager: {e}")
+                    self.posting_manager = None
+                    break
+            else:
+                time.sleep(0.5)  # Reduced from 1s to 0.5s for faster startup
+                retry_count += 1
+                
+        if not self.posting_manager:
+            logger.warning("[POSTING THREAD] Running without window manager - using fallback method")
+            
+        # Track posting timing for optimization
+        self._posting_stats = {'total_posts': 0, 'avg_time': 0, 'failures': 0}
+        
         while True:
             try:
-                post_url, comment = self.posting_queue.get()
-                logger.info(f"[POSTING THREAD] Posting comment to: {post_url}")
-                self._post_comment_background(post_url, comment)
+                # Handle both old format (post_url, comment) and new format (post_url, comment, comment_id)
+                queue_item = self.posting_queue.get(timeout=1)  # Non-blocking with timeout
+                
+                start_time = time.time()
+                success = False
+                
+                if len(queue_item) == 3:
+                    post_url, comment, comment_id = queue_item
+                    logger.info(f"[POSTING THREAD] Posting comment {comment_id} to: {post_url[:50]}...")
+                    
+                    # Use optimized window manager if available
+                    if hasattr(self, 'posting_manager') and self.posting_manager:
+                        success = self.posting_manager.post_comment(post_url, comment, comment_id)
+                    else:
+                        success = self._post_comment_background(post_url, comment, comment_id)
+                        
+                elif len(queue_item) == 2:
+                    post_url, comment = queue_item
+                    comment_id = None
+                    logger.info(f"[POSTING THREAD] Posting comment to: {post_url[:50]}...")
+                    
+                    # Use optimized window manager if available
+                    if hasattr(self, 'posting_manager') and self.posting_manager:
+                        success = self.posting_manager.post_comment(post_url, comment, comment_id)
+                    else:
+                        success = self._post_comment_background(post_url, comment, comment_id)
+                else:
+                    logger.error(f"[POSTING THREAD] Invalid queue item format: {queue_item}")
+                    success = False
+                
+                # Track performance metrics
+                posting_time = time.time() - start_time
+                self._update_posting_stats(posting_time, success)
+                
+                if success:
+                    logger.info(f"[POSTING THREAD] ✅ Comment posted in {posting_time:.2f}s")
+                else:
+                    logger.error(f"[POSTING THREAD] ❌ Comment failed after {posting_time:.2f}s")
+                
                 self.posting_queue.task_done()
+                
+            except queue.Empty:
+                # Queue timeout - allows thread to remain responsive
+                continue
             except Exception as e:
                 logger.error(f"[POSTING THREAD] Error posting comment: {e}")
+                self.posting_queue.task_done()
+                
+    def _update_posting_stats(self, posting_time, success):
+        """Track posting performance for optimization"""
+        self._posting_stats['total_posts'] += 1
+        
+        if success:
+            # Update running average
+            current_avg = self._posting_stats['avg_time']
+            total_posts = self._posting_stats['total_posts']
+            self._posting_stats['avg_time'] = ((current_avg * (total_posts - 1)) + posting_time) / total_posts
+        else:
+            self._posting_stats['failures'] += 1
+            
+        # Log performance every 10 posts
+        if self._posting_stats['total_posts'] % 10 == 0:
+            avg_time = self._posting_stats['avg_time']
+            failure_rate = (self._posting_stats['failures'] / self._posting_stats['total_posts']) * 100
+            logger.info(f"[PERFORMANCE] Avg posting time: {avg_time:.2f}s, Failure rate: {failure_rate:.1f}%")
 
-    def _post_comment_background(self, post_url, comment):
+    def _post_comment_background(self, post_url, comment, comment_id=None):
         """Navigate to post_url in the posting driver and post the comment. Use explicit waits and retry logic for robustness."""
         from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
         from selenium.webdriver.support.ui import WebDriverWait
@@ -583,6 +743,17 @@ class FacebookAICommentBot:
         try:
             driver.get(post_url)
             time.sleep(5)
+            
+            # Check if we're logged in by looking for login elements
+            if "login" in driver.current_url.lower() or len(driver.find_elements(By.XPATH, "//input[@name='email']")) > 0:
+                logger.error(f"[POSTING THREAD] Not logged into Facebook in posting browser")
+                if comment_id:
+                    try:
+                        from database import db
+                        db.update_comment_status(int(comment_id), "failed", error_message="Not logged into Facebook")
+                    except:
+                        pass
+                return False
             def find_comment_box():
                 elements = driver.find_elements(By.XPATH, self.config['COMMENT_BOX_XPATH'])
                 if not elements:
@@ -598,7 +769,14 @@ class FacebookAICommentBot:
                 comment_area = WebDriverWait(driver, 10).until(lambda d: find_comment_box())
             except TimeoutException:
                 logger.error(f"[POSTING THREAD] Could not find comment box for: {post_url}")
-                return
+                # Update database status on failure
+                if comment_id:
+                    try:
+                        from database import db
+                        db.update_comment_status(int(comment_id), "failed", error_message="Could not find comment box")
+                    except:
+                        pass
+                return False
 
             # Robust interaction with retries
             def safe_action(action_fn, max_retries=3):
@@ -620,19 +798,62 @@ class FacebookAICommentBot:
 
             # Click
             if not safe_action(lambda el: el.click()):
-                return
+                # Update database status on failure
+                if comment_id:
+                    try:
+                        from database import db
+                        db.update_comment_status(int(comment_id), "failed", error_message="Failed to click comment box")
+                    except:
+                        pass
+                return False
             time.sleep(1)
             # Type comment
             if not safe_action(lambda el: el.send_keys(comment)):
-                return
+                # Update database status on failure
+                if comment_id:
+                    try:
+                        from database import db
+                        db.update_comment_status(int(comment_id), "failed", error_message="Failed to type comment")
+                    except:
+                        pass
+                return False
             time.sleep(0.5)
             # Press RETURN
             if not safe_action(lambda el: el.send_keys(Keys.RETURN)):
-                return
+                # Update database status on failure
+                if comment_id:
+                    try:
+                        from database import db
+                        db.update_comment_status(int(comment_id), "failed", error_message="Failed to submit comment")
+                    except:
+                        pass
+                return False
+                
             logger.info(f"[POSTING THREAD] Successfully posted comment to: {post_url}")
+            
+            # Update database status on success
+            if comment_id:
+                try:
+                    from database import db
+                    db.update_comment_status(int(comment_id), "posted")
+                    logger.info(f"[POSTING THREAD] Updated comment {comment_id} status to 'posted'")
+                except Exception as db_error:
+                    logger.error(f"[POSTING THREAD] Failed to update database status: {db_error}")
+            
             time.sleep(2)
+            return True
+            
         except Exception as e:
             logger.error(f"[POSTING THREAD] Failed to post comment to {post_url}: {e}")
+            
+            # Update database status on exception
+            if comment_id:
+                try:
+                    from database import db
+                    db.update_comment_status(int(comment_id), "failed", error_message=str(e))
+                except:
+                    pass
+            return False
 
 
     def scrape_authors_and_generate_comments(self, scroll_count=5, pause_time=2):
@@ -677,7 +898,7 @@ class FacebookAICommentBot:
         
         # Initialize enhanced systems
         self.classifier = PostClassifier(self.config)
-        self.comment_generator = CommentGenerator(self.config)
+        self.comment_generator = ExternalCommentGenerator(self.config, database=db)
         self.duplicate_detector = DuplicateDetector(self.config)
 
     def already_commented(self, existing_comments: List[str]) -> bool:
@@ -687,39 +908,197 @@ class FacebookAICommentBot:
     def is_duplicate_post(self, post_text: str, post_url: str) -> bool:
         """Check if this is a duplicate post"""
         return self.duplicate_detector.is_duplicate_post(post_text, post_url)
+    
+    def retry_on_failure(self, func, max_retries=3, wait_time=2, check_session=True):
+        """
+        Generic retry wrapper for WebDriver operations
+        
+        Args:
+            func: Function to execute
+            max_retries: Maximum number of retry attempts
+            wait_time: Initial wait time between retries (exponential backoff)
+            check_session: Whether to check WebDriver session before retry
+        
+        Returns:
+            Result of the function if successful
+        
+        Raises:
+            RuntimeError if all retries fail
+        """
+        last_exception = None
+        
+        for attempt in range(max_retries):
+            try:
+                # Check if WebDriver session is still active before trying
+                if check_session and self.driver:
+                    try:
+                        # Quick health check
+                        self.driver.execute_script("return 1;")
+                    except WebDriverException:
+                        logger.error("WebDriver session is dead, cannot retry operation")
+                        raise RuntimeError("WebDriver session lost")
+                
+                # Try to execute the function
+                result = func()
+                
+                if attempt > 0:
+                    logger.info(f"✅ Operation succeeded on retry {attempt + 1}")
+                
+                return result
+                
+            except WebDriverException as e:
+                last_exception = e
+                logger.warning(f"WebDriver operation failed (attempt {attempt + 1}/{max_retries}): {e}")
+                
+                if attempt < max_retries - 1:
+                    wait = wait_time * (attempt + 1)  # Exponential backoff
+                    logger.info(f"Waiting {wait} seconds before retry...")
+                    time.sleep(wait)
+                else:
+                    logger.error(f"Operation failed after {max_retries} attempts")
+                    
+            except Exception as e:
+                last_exception = e
+                logger.error(f"Unexpected error during operation: {e}")
+                break
+        
+        raise RuntimeError(f"Operation failed after {max_retries} retries: {last_exception}")
 
     def setup_driver(self):
+        """Setup Chrome driver with connection validation and retry logic"""
+        MAX_RETRIES = 5
+        RETRY_WAIT = 2
+        
+        for attempt in range(MAX_RETRIES):
+            try:
+                logger.info(f"Attempting to start Chrome driver (attempt {attempt + 1}/{MAX_RETRIES})...")
+                
+                # Set environment for Chrome stability
+                os.environ['CHROME_LOG_FILE'] = 'nul'
+                
+                chrome_options = Options()
+                # Enhanced Chrome arguments for maximum stability and reliability
+                chrome_options.add_argument("--no-sandbox")
+                chrome_options.add_argument("--disable-dev-shm-usage")
+                
+                # Additional stability options
+                chrome_options.add_argument("--disable-extensions")
+                chrome_options.add_argument("--disable-gpu")
+                chrome_options.add_argument("--no-first-run")
+                chrome_options.add_argument("--disable-background-timer-throttling")
+                chrome_options.add_argument("--disable-renderer-backgrounding")
+                chrome_options.add_argument("--disable-backgrounding-occluded-windows")
+                chrome_options.add_argument("--disable-web-security")
+                chrome_options.add_argument("--disable-features=VizDisplayCompositor")
+                
+                # Run in visible mode so you can see what the bot is doing
+                # chrome_options.add_argument("--headless")  # Commented out to show browser
+                chrome_options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
+                chrome_options.add_experimental_option('useAutomationExtension', False)
+                
+                # Suppress Chrome log noise
+                chrome_options.add_argument("--log-level=3")  # Only fatal errors
+                chrome_options.add_argument("--silent")
+                
+                # User data and profile settings
+                user_data_dir = os.path.join(os.getcwd(), "chrome_data")
+                chrome_options.add_argument(f"--user-data-dir={user_data_dir}")
+                chrome_options.add_argument(f"--profile-directory={self.config['CHROME_PROFILE']}")
+                
+                # Set window size for consistent screenshots
+                chrome_options.add_argument("--window-size=1920,1080")
+                
+                # Enable remote debugging for potential future use
+                chrome_options.add_argument("--remote-debugging-port=9222")
+                chrome_options.add_argument("--remote-debugging-address=127.0.0.1")
+                
+                service = Service(ChromeDriverManager().install())
+                service.start()  # Start service explicitly
+                
+                # Set timeouts for better connection stability
+                self.driver = webdriver.Chrome(service=service, options=chrome_options)
+                self.driver.implicitly_wait(10)  # Wait up to 10 seconds for elements
+                self.driver.set_page_load_timeout(30)  # 30 second timeout for page loads
+                
+                # Validate connection by checking session ID
+                if not self.driver.session_id:
+                    raise WebDriverException("Failed to establish WebDriver session")
+                
+                # Test the connection with a simple command
+                try:
+                    self.driver.execute_script("return navigator.userAgent;")
+                    logger.info(f"✅ Chrome driver connected successfully (session: {self.driver.session_id[:8]}...)")
+                    logger.info("Chrome driver set up successfully in visible mode.")
+                    return  # Success!
+                    
+                except Exception as test_error:
+                    logger.error(f"Driver created but not responding: {test_error}")
+                    if self.driver:
+                        self.driver.quit()
+                    raise WebDriverException("Driver health check failed")
+                    
+            except WebDriverException as e:
+                logger.warning(f"WebDriver connection attempt {attempt + 1} failed: {e}")
+                
+                if attempt < MAX_RETRIES - 1:
+                    logger.info(f"Waiting {RETRY_WAIT} seconds before retry...")
+                    time.sleep(RETRY_WAIT * (attempt + 1))  # Exponential backoff
+                else:
+                    logger.error(f"Failed to setup Chrome Driver after {MAX_RETRIES} attempts")
+                    raise RuntimeError(f"Unable to start WebDriver after {MAX_RETRIES} retries: {e}")
+                    
+            except Exception as e:
+                logger.error(f"Unexpected error setting up Chrome Driver: {e}")
+                raise
+
+    def is_driver_healthy(self):
+        """Check if WebDriver connection is still alive"""
         try:
-            chrome_options = Options()
-            chrome_options.add_argument("--disable-popup-blocking")
-            chrome_options.add_argument("--disable-notifications")
-            chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-            chrome_options.add_experimental_option('useAutomationExtension', False)
-            chrome_options.binary_location = "C:/Program Files/Google/Chrome/Application/chrome.exe"
-            user_data_dir = os.path.join(os.getcwd(), "chrome_data")
-            chrome_options.add_argument(f"--user-data-dir={user_data_dir}")
-            chrome_options.add_argument(f"--profile-directory={self.config['CHROME_PROFILE']}")
-            
-            # Run in visible mode so you can see what the bot is doing
-            # chrome_options.add_argument("--headless")  # Commented out to show browser
-            # chrome_options.add_argument("--no-sandbox")  # Commented out to show browser
-            chrome_options.add_argument("--disable-dev-shm-usage")
-            
-            # Set window size for consistent screenshots
-            chrome_options.add_argument("--window-size=1920,1080")
-            
-            # Enable remote debugging for potential future use
-            chrome_options.add_argument("--remote-debugging-port=9222")
-            chrome_options.add_argument("--remote-debugging-address=127.0.0.1")
-            chrome_options.add_argument("--disable-web-security")
-            chrome_options.add_argument("--allow-running-insecure-content")
-            
-            service = Service(ChromeDriverManager().install())
-            self.driver = webdriver.Chrome(service=service, options=chrome_options)
-            logger.info("Chrome driver set up successfully in visible mode.")
+            if not hasattr(self, 'driver') or self.driver is None:
+                return False
+            self.driver.current_url
+            return True
         except Exception as e:
-            logger.error(f"Failed to setup Chrome Driver: {e}")
-            raise
+            logger.debug(f"Driver health check failed: {e}")
+            return False
+
+    def reconnect_driver_if_needed(self):
+        """Reconnect driver if connection is lost"""
+        if not self.is_driver_healthy():
+            logger.warning("Driver connection lost, attempting to reconnect...")
+            if hasattr(self, 'driver') and self.driver:
+                try:
+                    self.driver.quit()
+                except Exception as e:
+                    logger.debug(f"Error closing old driver: {e}")
+            self.setup_driver()
+            logger.info("Driver reconnection completed")
+
+def with_driver_recovery(func):
+    """Decorator to automatically recover from driver connection issues"""
+    def wrapper(self, *args, **kwargs):
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            try:
+                return func(self, *args, **kwargs)
+            except Exception as e:
+                error_msg = str(e).lower()
+                is_connection_error = any(keyword in error_msg for keyword in [
+                    "connection refused", "max retries exceeded", "failed to establish",
+                    "connection broken", "session not created", "chrome not reachable"
+                ])
+                
+                if is_connection_error and attempt < max_attempts - 1:
+                    logger.warning(f"Connection error in {func.__name__}, reconnecting (attempt {attempt + 1}/{max_attempts})...")
+                    try:
+                        self.reconnect_driver_if_needed()
+                        continue
+                    except Exception as reconnect_error:
+                        logger.error(f"Failed to reconnect driver: {reconnect_error}")
+                        
+                raise  # Re-raise the original exception
+        return None
+    return wrapper
 
     def random_pause(self, min_time=1, max_time=5):
         delay = random.uniform(min_time, max_time)
@@ -1093,20 +1472,33 @@ class FacebookAICommentBot:
 
     def scroll_and_collect_post_links(self, max_scrolls=5):
         collected = set()
+        empty_scroll_count = 0
+        max_empty_scrolls = 2  # Stop after 2 consecutive empty scrolls
         
         for scroll_num in range(max_scrolls):
             logger.info(f"Scroll {scroll_num + 1}/{max_scrolls}")
             
-            # TEMPORARILY DISABLE PHOTO URLS - they're causing too many problems
-            # Only collect group post URLs for now
+            # Wait for dynamic content to load before searching
+            try:
+                # Wait up to 3 seconds for at least one post link to appear
+                WebDriverWait(self.driver, 3).until(
+                    EC.presence_of_element_located((By.XPATH, 
+                        "//a[contains(@href, '/groups/') or contains(@href, '/photo/') or contains(@href, '/commerce/')]"))
+                )
+            except TimeoutException:
+                logger.debug("No new elements appeared after wait - page might be fully loaded")
+            
+            # Collect group posts, photo posts, and commerce listings
+            # Photo URLs with fbid and any set= parameter (g., a., pcb., etc.)
             post_links = self.driver.find_elements(
                 By.XPATH,
-                "//a[contains(@href, '/groups/') and contains(@href, '/posts/') and string-length(@href) > 80]"
+                "//a[contains(@href, '/groups/') and contains(@href, '/posts/') and not(contains(@href, 'comment_id')) and string-length(@href) > 60]" +
+                " | //a[contains(@href, '/photo/?fbid=') and contains(@href, 'set=')]" +
                 " | //a[contains(@href, '/commerce/listing/') and string-length(@href) > 80]"
             )
             
             # Log what we're looking for
-            logger.info("🔍 Only collecting group posts and commerce listings (photo URLs temporarily disabled)")
+            logger.info("🔍 Collecting group posts, photo posts, and commerce listings")
             
             hrefs = [link.get_attribute('href') for link in post_links if link.get_attribute('href')]
             logger.info(f"Found {len(hrefs)} post links on this scroll")
@@ -1115,7 +1507,8 @@ class FacebookAICommentBot:
             if hrefs:
                 logger.info("🔍 ALL URLs found (before filtering):")
                 for i, href in enumerate(hrefs[:10]):  # Show first 10
-                    logger.info(f"  {i+1}: {href}")
+                    # Show raw URL only for now to avoid confusion
+                    logger.info(f"  {i+1}: {href[:150]}...")
                 if len(hrefs) > 10:
                     logger.info(f"  ... and {len(hrefs) - 10} more")
                 
@@ -1131,18 +1524,42 @@ class FacebookAICommentBot:
             # Filter out broken/incomplete URLs and clean them
             valid_hrefs = []
             for href in hrefs:
-                if self.is_valid_post_url(href):
-                    # Clean the URL by removing query parameters for consistent processing
-                    clean_href = href.split('?')[0] if '?' in href else href
-                    valid_hrefs.append(clean_href)
+                # For photo URLs, keep essential parameters (fbid, set) but remove tracking params
+                if '/photo/' in href and 'fbid=' in href:
+                    # Keep photo URLs mostly intact, just remove tracking parameters
+                    import re
+                    # Remove tracking parameters but keep fbid and set
+                    clean_href = re.sub(r'&(__cft__|__tn__|notif_id|notif_t|ref)=[^&]*', '', href)
+                    clean_href = re.sub(r'&context=[^&]*', '', clean_href)  # Remove long context param
                 else:
-                    logger.warning(f"❌ Filtered out broken URL: {href}")
+                    # For non-photo URLs, remove all query parameters
+                    clean_href = href.split('?')[0] if '?' in href else href
+                
+                # Then validate the cleaned URL
+                if self.is_valid_post_url(clean_href):
+                    # Check if we haven't already seen this clean URL
+                    if clean_href not in collected:
+                        valid_hrefs.append(clean_href)
+                        logger.info(f"✅ Valid URL (length {len(clean_href)}): {clean_href[:150]}...")
+                    else:
+                        logger.info(f"⏭️ Skipping duplicate URL: {clean_href[:100]}...")
+                else:
+                    logger.warning(f"❌ Filtered out invalid URL (length {len(clean_href)}): {clean_href}")
             
-            logger.info(f"After filtering: {len(valid_hrefs)} valid URLs from {len(hrefs)} total")
+            logger.info(f"After filtering: {len(valid_hrefs)} new valid URLs from {len(hrefs)} total")
             
             # Log some example URLs
             if valid_hrefs:
-                logger.info(f"Example valid URLs: {valid_hrefs[:3]}")
+                logger.info(f"Example new valid URLs: {valid_hrefs[:3]}")
+                empty_scroll_count = 0  # Reset counter when posts are found
+            else:
+                empty_scroll_count += 1
+                logger.warning(f"No new posts found on scroll {scroll_num + 1} (consecutive empty: {empty_scroll_count})")
+                
+                # Break if too many empty scrolls
+                if empty_scroll_count >= max_empty_scrolls:
+                    logger.info(f"Stopping early - {max_empty_scrolls} consecutive scrolls with no new posts")
+                    break
             
             collected.update(valid_hrefs)
             self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
@@ -1163,10 +1580,17 @@ class FacebookAICommentBot:
         
         # AGGRESSIVE filtering for photo URLs - they're causing the most problems
         if '/photo/' in url:
-            # Photo URLs must be at least 100 characters long
-            if len(url) < 100:
-                logger.warning(f"❌ Photo URL too short (likely broken): {url}")
-                return False
+            # Group photo URLs with any set= are valid even if shorter
+            if 'set=' in url:
+                # Group photos just need fbid and set=
+                if len(url) < 70:
+                    logger.warning(f"❌ Photo URL too short: {url}")
+                    return False
+            else:
+                # Non-group photo URLs must be at least 100 characters long
+                if len(url) < 100:
+                    logger.warning(f"❌ Photo URL too short (likely broken): {url}")
+                    return False
             
             # Must have fbid parameter
             if 'fbid=' not in url:
@@ -1208,7 +1632,18 @@ class FacebookAICommentBot:
                 return False
         
         # URL must be reasonably long (not just a base path)
-        if len(url) < 80:  # Increased minimum length
+        # Exception: Group posts and photo URLs are valid even with shorter URLs
+        if '/groups/' in url and '/posts/' in url:
+            # Group posts just need the post ID, can be shorter
+            if len(url) < 60:
+                logger.warning(f"❌ Group post URL too short (likely incomplete): {url}")
+                return False
+        elif '/photo/' in url and 'fbid=' in url:
+            # Photo URLs can be shorter but need fbid parameter
+            if len(url) < 50:
+                logger.warning(f"❌ Photo URL too short (likely incomplete): {url}")
+                return False
+        elif len(url) < 80:  # Other URLs need to be longer
             logger.warning(f"❌ URL too short (likely incomplete): {url}")
             return False
         
@@ -1303,12 +1738,186 @@ class FacebookAICommentBot:
         except Exception as e:
             logger.error(f"Error during page structure debug: {e}")
 
+    def is_valid_text_quality(self, text):
+        """Validate extracted text quality to detect scrambled/fragmented text"""
+        if not text or len(text) < 10:
+            logger.debug("Text too short or empty")
+            return False
+        
+        # Check for scrambled text pattern (too many single characters separated by spaces)
+        words = text.split()
+        if not words:
+            return False
+            
+        # Count single character "words" 
+        single_chars = len([word for word in words if len(word) == 1 and word.isalnum()])
+        total_words = len(words)
+        
+        # If more than 50% are single characters, it's likely scrambled
+        if single_chars > total_words * 0.5:
+            logger.warning(f"Text appears scrambled: {single_chars}/{total_words} single chars")
+            logger.debug(f"Scrambled text sample: {text[:100]}...")
+            return False
+        
+        # Check for reasonable word length distribution
+        avg_word_length = sum(len(word) for word in words) / total_words if total_words > 0 else 0
+        if avg_word_length < 2:  # Average word length too short
+            logger.warning(f"Average word length too short: {avg_word_length}")
+            return False
+            
+        # Check for meaningful content (not just repeated characters)
+        if len(set(text.replace(' ', '').lower())) < 5:  # Too few unique characters
+            logger.warning("Text has too few unique characters")
+            return False
+            
+        logger.debug(f"Text quality validation passed: {len(text)} chars, {total_words} words, avg length {avg_word_length:.1f}")
+        return True
+
+    def extract_text_from_elements(self, elements, method_name):
+        """Extract text using JavaScript to get consolidated content from parent containers"""
+        extracted_texts = []
+        
+        for element in elements:
+            try:
+                # Use multiple JavaScript methods to extract clean text content
+                js_methods = [
+                    # Method 1: textContent - gets all text including hidden elements
+                    "return arguments[0].textContent;",
+                    # Method 2: innerText - gets visible text only
+                    "return arguments[0].innerText;", 
+                    # Method 3: Combined approach - prefer visible text, fallback to textContent
+                    """
+                    var elem = arguments[0];
+                    var text = elem.innerText || elem.textContent || '';
+                    return text.trim();
+                    """
+                ]
+                
+                for js_code in js_methods:
+                    try:
+                        # Extract text using JavaScript
+                        text = self.driver.execute_script(js_code, element)
+                        if text and isinstance(text, str):
+                            text = text.strip()
+                            
+                            # Quick validation - must be substantial and not scrambled
+                            if len(text) > 20 and self.is_text_not_scrambled(text):
+                                logger.debug(f"JS method extracted: {text[:100]}...")
+                                
+                                # Apply content filtering
+                                filtered_text = self.filter_ui_and_comment_content(text)
+                                if filtered_text:
+                                    extracted_texts.append(filtered_text)
+                                    break  # Success with this element, try next
+                                    
+                    except Exception as js_e:
+                        logger.debug(f"JavaScript extraction failed: {js_e}")
+                        continue
+                        
+                # Fallback to regular .text property if JavaScript fails
+                if not extracted_texts or len(extracted_texts) == 0:
+                    try:
+                        fallback_text = element.text.strip()
+                        if fallback_text and len(fallback_text) > 20 and self.is_text_not_scrambled(fallback_text):
+                            filtered_text = self.filter_ui_and_comment_content(fallback_text)
+                            if filtered_text:
+                                extracted_texts.append(filtered_text)
+                                logger.debug(f"Fallback extraction: {fallback_text[:100]}...")
+                    except Exception as fallback_e:
+                        logger.debug(f"Fallback extraction failed: {fallback_e}")
+                        
+            except Exception as e:
+                logger.debug(f"Element processing failed: {e}")
+                continue
+        
+        if not extracted_texts:
+            logger.debug(f"No valid text extracted using {method_name}")
+            return None
+            
+        # Find the best text using prioritization strategies
+        return self.prioritize_extracted_texts(extracted_texts, method_name)
+    
+    def is_text_not_scrambled(self, text):
+        """Check if text is not scrambled character fragments"""
+        if not text or len(text) < 10:
+            return False
+            
+        words = text.split()
+        if len(words) < 2:
+            return False
+            
+        # Count words vs single characters
+        single_chars = len([word for word in words if len(word) == 1])
+        word_ratio = single_chars / len(words) if words else 1
+        
+        # If more than 50% are single characters, likely scrambled
+        if word_ratio > 0.5:
+            logger.debug(f"Text appears scrambled: {word_ratio:.1%} single chars")
+            return False
+            
+        return True
+    
+    def filter_ui_and_comment_content(self, text):
+        """Filter out UI elements and comment-like content"""
+        if not text:
+            return None
+            
+        # UI text filters
+        ui_filters = [
+            "Write a comment", "Add a comment", "What's on your mind", "Share your thoughts",
+            "Like", "Comment", "Share", "Send", "Reply", "Be the first to comment",
+            "View post", "Most relevant", "Top comments", "All comments", "Sort by",
+            "See more comments", "Hide comments", "Load more comments"
+        ]
+        
+        # Check for UI text
+        if any(ui_filter.lower() in text.lower() for ui_filter in ui_filters):
+            logger.debug(f"Filtering out UI text: {text[:50]}...")
+            return None
+        
+        # Comment pattern indicators
+        comment_patterns = [
+            text.strip().startswith(("@", "Reply to", "Replying to")),
+            " replied to " in text.lower() or " commented on " in text.lower(),
+            len(text.strip()) < 30 and any(word in text.lower() for word in 
+                ["yes", "no", "thanks", "lol", "haha", "great", "nice", "wow", "cool", "awesome"])
+        ]
+        
+        if any(comment_patterns):
+            logger.debug(f"Filtering out comment-like text: {text[:50]}...")
+            return None
+            
+        # Clean and normalize
+        cleaned_text = ' '.join(text.split())
+        return cleaned_text if len(cleaned_text) > 15 else None
+    
+    def prioritize_extracted_texts(self, texts, method_name):
+        """Prioritize extracted texts to find the best post content"""
+        if not texts:
+            return None
+            
+        # Strategy 1: Prefer longer, more substantial content
+        substantial_texts = [t for t in texts if len(t) > 50]
+        if substantial_texts:
+            best_text = max(substantial_texts, key=len)
+            logger.info(f"Successfully extracted substantial text using {method_name}: {best_text[:100]}...")
+            return best_text
+            
+        # Strategy 2: Take the longest available text
+        if texts:
+            best_text = max(texts, key=len)
+            logger.info(f"Successfully extracted text using {method_name}: {best_text[:100]}...")
+            return best_text
+            
+        return None
+
     def get_post_text(self):
         """
         Extract the main text of the post for context or logging.
         Tries multiple XPaths for text, photo, shared, event, OCR, and fallback content.
+        Enhanced with quality validation to prevent scrambled text.
         """
-        logger.info("Attempting to extract post text...")
+        logger.info("Attempting to extract post text with quality validation...")
         
         # Wait for page to fully load
         try:
@@ -1326,52 +1935,32 @@ class FacebookAICommentBot:
         # First, debug the page structure
         self.debug_post_structure()
         
-        # Try multiple text extraction methods with better logging
+        # Use parent container + JavaScript extraction approach to avoid character-level spans
         extraction_methods = [
-            # Method 1: Modern Facebook post text (2024-2025)
-            ("//div[@data-ad-preview='message']", "standard post text"),
-            ("//div[contains(@class, 'x1iorvi4')]", "modern Facebook text class"),
-            ("//div[contains(@class, 'x1n2onr6')]", "Facebook content container"),
-            ("//div[contains(@class, 'x1lliihq')]", "Facebook text wrapper"),
+            # Method 1: Target parent containers with JavaScript extraction
+            ("//div[@data-testid='post_message']", "Facebook post message container"),
+            ("//div[@data-ad-preview='message']", "Facebook ad preview container"), 
+            ("//div[contains(@class, 'userContent')]", "Facebook user content container"),
             
-            # Method 2: Alternative post text selectors
-            ("//div[contains(@class, 'post')]//div[@dir='auto']", "post text with dir attribute"),
-            ("//div[@role='article']//div[@dir='auto']", "article text with dir attribute"),
-            ("//div[@role='article']//div[contains(@class, 'x1iorvi4')]", "article with modern class"),
+            # Method 2: Article content containers (avoid comment sections)
+            ("//div[@role='article']/div[position()<=3]//div[contains(span,'') or contains(div,'')]", "Article top sections with content"),
+            ("//div[@role='article']//div[not(ancestor::*[contains(@aria-label, 'comment') or contains(@aria-label, 'Comment')])]", "Non-comment containers"),
             
-            # Method 3: Generic text content with modern classes
-            ("//div[@role='article']//span[contains(@class, 'text')]", "text span elements"),
-            ("//div[@role='article']//div[contains(@class, 'text')]", "text div elements"),
-            ("//div[@role='article']//div[contains(@class, 'x1iorvi4')]", "modern text div"),
-            ("//div[@role='article']//span[contains(@class, 'x1iorvi4')]", "modern text span"),
+            # Method 3: Semantic content containers
+            ("//div[@role='article']//div[@dir='auto']", "Article directional containers"),
+            ("//div[@role='article']//p", "Article paragraph containers"),
+            ("//div[@role='article']//*[self::div or self::p][contains(.,' ')]", "Article containers with text content"),
             
-            # Method 4: Photo post alt text and captions
-            ("//div[@role='article']//img[@alt]", "image alt text"),
-            ("//div[@role='article']//div[contains(@class, 'caption')]", "photo caption"),
-            ("//div[@role='article']//div[contains(@class, 'description')]", "photo description"),
-            ("//div[@role='article']//div[contains(@class, 'x1iorvi4')]//img[@alt]", "modern photo alt text"),
+            # Method 4: Photo and media containers
+            ("//div[@role='article']//img[@alt]", "Image elements with alt text"),
+            ("//div[@role='article']//div[contains(@class, 'caption')]", "Photo caption containers"),
             
-            # Method 5: Shared post content
-            ("//div[@data-ad-preview='message']//div[@dir='auto']", "shared post text"),
-            ("//div[contains(@class, 'shared-content')]//div[@dir='auto']", "shared content text"),
-            ("//div[contains(@class, 'x1iorvi4')]//div[contains(@class, 'shared')]", "modern shared content"),
-            ("//div[@role='article']//div[contains(@class, 'shared')]", "article shared content"),
-            
-            # Method 6: Event post
-            ("//div[@role='main']//span[contains(@class, 'event-title')]", "event title"),
-            
-            # Method 7: Generic visible text
-            ("//div[@role='article']//p", "paragraph text"),
-            ("//div[@role='article']//span", "span text"),
-            ("//div[@role='article']//div", "div text"),
-            
-            # Method 8: New Facebook structure (2025)
-            ("//div[contains(@class, 'x1n2onr6')]//div[contains(@class, 'x1iorvi4')]", "new Facebook structure"),
-            ("//div[contains(@class, 'x1lliihq')]//div[contains(@class, 'x1iorvi4')]", "Facebook text container"),
-            ("//div[contains(@class, 'x1iorvi4')]//span", "modern text span"),
-            ("//div[contains(@class, 'x1iorvi4')]//div", "modern text div"),
+            # Method 5: Broad container fallbacks
+            ("//div[@role='article']", "Main article container"),
+            ("//div[contains(@class, 'post')]", "Generic post containers"),
         ]
         
+        # Try each extraction method with quality validation
         for xpath, method_name in extraction_methods:
             try:
                 logger.info(f"Trying method: {method_name}")
@@ -1380,25 +1969,25 @@ class FacebookAICommentBot:
                 if elements:
                     logger.info(f"Found {len(elements)} elements for {method_name}")
                     
-                    # Extract text from all elements
-                    texts = []
-                    for element in elements:
-                        try:
-                            text = element.text.strip()
-                            if text and len(text) > 10:  # Only meaningful text
-                                # Clean up the text (remove extra whitespace, normalize)
-                                text = ' '.join(text.split())  # Normalize whitespace
-                                if text and len(text) > 10:  # Check again after cleaning
-                                    texts.append(text)
-                        except Exception as e:
-                            logger.debug(f"Failed to extract text from element: {e}")
-                            continue
+                    # Handle image alt text specially using JavaScript
+                    if "Image" in method_name and "alt" in method_name:
+                        for img_element in elements:
+                            try:
+                                # Use JavaScript to get alt attribute reliably
+                                alt_text = self.driver.execute_script("return arguments[0].alt || arguments[0].getAttribute('alt');", img_element)
+                                if alt_text and len(alt_text) > 10 and self.is_text_not_scrambled(alt_text):
+                                    filtered_alt = self.filter_ui_and_comment_content(alt_text)
+                                    if filtered_alt:
+                                        logger.info(f"Successfully extracted image alt text: {filtered_alt[:100]}...")
+                                        return filtered_alt
+                            except Exception as e:
+                                logger.debug(f"Failed to get alt text: {e}")
+                        continue
                     
-                    if texts:
-                        # Combine all meaningful text
-                        combined_text = ' '.join(texts)
-                        logger.info(f"Successfully extracted text using {method_name}: {combined_text[:100]}...")
-                        return combined_text
+                    # Use improved JavaScript-based text extraction method
+                    extracted_text = self.extract_text_from_elements(elements, method_name)
+                    if extracted_text:
+                        return extracted_text
                         
             except Exception as e:
                 logger.debug(f"Method {method_name} failed: {e}")
@@ -1476,28 +2065,7 @@ class FacebookAICommentBot:
         logger.error("This means the bot cannot process this post")
         return ""
     
-    def get_live_screenshot(self):
-        """Get a live screenshot of the current browser view"""
-        try:
-            if not self.driver:
-                return None
-            
-            # Take screenshot
-            screenshot = self.driver.get_screenshot_as_png()
-            
-            # Convert to base64 for easy transmission
-            import base64
-            screenshot_b64 = base64.b64encode(screenshot).decode('utf-8')
-            
-            return {
-                "screenshot": f"data:image/png;base64,{screenshot_b64}",
-                "url": self.driver.current_url,
-                "title": self.driver.title,
-                "timestamp": datetime.now().isoformat()
-            }
-        except Exception as e:
-            logger.error(f"Failed to get live screenshot: {e}")
-            return None
+    # get_live_screenshot method removed
 
     def get_existing_comments(self):
         try:
@@ -1507,26 +2075,63 @@ class FacebookAICommentBot:
             return []
     
     def get_post_author(self) -> str:
-        """Extract the author name from a post using structural selectors + heuristics."""
+        """Extract the post author name from Facebook post page."""
         try:
-            # Structural selectors only (no fragile class names)
+            # Try multiple approaches to find the post author
             author_selectors = [
+                # WORKING SELECTOR: Simple h2 + a + href (found in debug)
+                "//h2//a[contains(@href, '/')]",
+                # Direct approach - Look for the main author link in the post header
+                "//div[@role='article']//h2//a[@role='link']",
+                "//div[@role='article']//h3//a[@role='link']",
+                # Alternative - Look for author spans within header links  
+                "//div[@role='article']//h2//a[@role='link']//span[contains(@class,'')]",
+                "//div[@role='article']//h3//a[@role='link']//span[contains(@class,'')]",
+                # Fallback - Any link that looks like a profile link in the article header
+                "//div[@role='article']//a[contains(@href, 'facebook.com/') and @role='link'][1]",
+                # Last resort - Look for text content in header area
                 "//div[@role='article']//h2//span",
-                "//div[@role='article']//h3//span",
-                "//div[@role='article']//a[@role='link']//span"
+                "//div[@role='article']//h3//span"
             ]
 
             for selector in author_selectors:
                 try:
                     elements = self.driver.find_elements(By.XPATH, selector)
                     for element in elements:
-                        name = element.text.strip()
-                        if name and self.is_valid_author_name(name):
-                            logger.info(f"✅ Found post author: {name}")
-                            return name
+                        # For link elements, get the text content
+                        if element.tag_name == 'a':
+                            name = element.text.strip()
+                            href = element.get_attribute('href') or ""
+                            
+                            # Make sure it's a profile link and has valid name
+                            if name and self.is_valid_author_name(name) and 'facebook.com/' in href:
+                                logger.info(f"✅ Found post author from link: {name} ({href})")
+                                return name
+                        else:
+                            # For span elements, get text content
+                            name = element.text.strip()
+                            if name and self.is_valid_author_name(name):
+                                logger.info(f"✅ Found post author from span: {name}")
+                                return name
+                                
                 except Exception as e:
                     logger.debug(f"Selector failed: {selector} - {e}")
                     continue
+
+            # If no author found, try a more aggressive approach
+            try:
+                # Look for any profile links in the first part of the article
+                profile_links = self.driver.find_elements(By.XPATH, 
+                    "//div[@role='article']//a[contains(@href, 'facebook.com/') and @role='link']")
+                
+                for link in profile_links[:3]:  # Check first 3 profile links
+                    name = link.text.strip()
+                    href = link.get_attribute('href') or ""
+                    if name and self.is_valid_author_name(name) and '/profile/' not in href:
+                        logger.info(f"✅ Found post author via fallback: {name}")
+                        return name
+            except Exception as e:
+                logger.debug(f"Fallback profile link search failed: {e}")
 
             logger.warning("⚠️ Could not extract a valid post author name")
             return ""
@@ -1756,8 +2361,68 @@ class FacebookAICommentBot:
             if random.random() < 0.4:  # 40% chance
                 self.inject_random_human_behavior()
             
-            # Post the comment
-            comment_area.send_keys(Keys.RETURN)
+            # Post the comment with enhanced reliability
+            try:
+                # First try the standard Enter key
+                comment_area.send_keys(Keys.RETURN)
+                logger.info(f"✅ Sent RETURN key for comment {comment_count + 1}")
+            except Exception as key_error:
+                logger.warning(f"Standard RETURN key failed: {key_error}")
+                
+                # Fallback: Try to find and click the Post button
+                try:
+                    logger.info("Attempting to find and click Post button...")
+                    
+                    # Common Facebook Post button selectors
+                    post_button_selectors = [
+                        "//div[@aria-label='Post' and @role='button']",
+                        "//div[@aria-label='Comment' and @role='button']",
+                        "//button[contains(@aria-label, 'Post')]",
+                        "//button[contains(@aria-label, 'Comment')]",
+                        "//div[contains(@class, 'x1i10hfl') and @role='button' and @tabindex='0']",
+                        "//div[@role='button' and contains(., 'Post')]"
+                    ]
+                    
+                    button_found = False
+                    for selector in post_button_selectors:
+                        try:
+                            # Wait for button to be clickable
+                            wait = WebDriverWait(self.driver, 3)
+                            post_button = wait.until(
+                                EC.element_to_be_clickable((By.XPATH, selector))
+                            )
+                            
+                            # Use JavaScript click for reliability
+                            self.driver.execute_script("arguments[0].click();", post_button)
+                            logger.info(f"✅ Clicked Post button using selector: {selector}")
+                            button_found = True
+                            break
+                            
+                        except (TimeoutException, NoSuchElementException):
+                            continue
+                        except Exception as btn_error:
+                            logger.debug(f"Button selector {selector} failed: {btn_error}")
+                            continue
+                    
+                    if not button_found:
+                        # Last resort: Try JavaScript Enter key simulation
+                        logger.info("Post button not found, simulating Enter key via JavaScript...")
+                        self.driver.execute_script("""
+                            var event = new KeyboardEvent('keydown', {
+                                key: 'Enter',
+                                code: 'Enter',
+                                keyCode: 13,
+                                which: 13,
+                                bubbles: true
+                            });
+                            arguments[0].dispatchEvent(event);
+                        """, comment_area)
+                        logger.info("✅ Dispatched Enter key event via JavaScript")
+                        
+                except Exception as fallback_error:
+                    logger.error(f"All posting methods failed: {fallback_error}")
+                    raise
+            
             logger.info(f"✅ Posted comment {comment_count + 1}: {comment[:50]}...")
             
             # Wait for comment to post with natural timing
@@ -1806,32 +2471,476 @@ class FacebookAICommentBot:
 
     def extract_first_image_url(self):
         """
-        Extract the first image URL from the current post (if any). Returns the image URL or an empty string.
-        Adds detailed debug logging for troubleshooting.
+        Extract the first image URL from the current post, specifically avoiding comment section emojis/stickers.
+        Returns the image URL or an empty string.
         """
         try:
             logger.critical("!!! IMAGE EXTRACTION TEST LOG !!! extract_first_image_url CALLED !!!")
             logger.info("[Image Extraction] Called extract_first_image_url.")
-            img_elements = self.driver.find_elements(By.XPATH, "//div[@role='article']//img[@src]")
-            logger.info(f"[Image Extraction] Found {len(img_elements)} <img> elements with src.")
-            for idx, img in enumerate(img_elements):
-                src = img.get_attribute('src')
-                logger.info(f"[Image Extraction] img[{idx}] src: {src}")
-                # Filter out emoji, icons, or empty src
-                if src and not src.endswith('emoji') and 'profile' not in src and 'static' not in src:
-                    logger.info(f"[Image Extraction] Returning image src: {src}")
-                    return src
-            logger.info("[Image Extraction] No suitable image found, returning empty string.")
+            
+            # Wait for images to load
+            self.wait_for_images_to_load()
+            
+            # STRATEGY 1: Target only the main post content, excluding comments
+            post_content_selectors = [
+                # Facebook CDN patterns (try multiple CDN domains)
+                "//div[@role='article']//img[@src and (contains(@src, 'scontent') or contains(@src, 'fbcdn'))]",
+                "//div[@role='article']//div[contains(@data-pagelet, 'FeedUnit')]//img[@src and (contains(@src, 'scontent') or contains(@src, 'fbcdn'))]",
+                "//div[@role='article']//div[contains(@class, 'x1yztbdb')]//img[@src and (contains(@src, 'scontent') or contains(@src, 'fbcdn'))]",
+                
+                # General post content images (not limited to CDN)
+                "//div[@role='article']//div[contains(@class, 'x1n2onr6')]//img[@src]",
+                "//div[contains(@class, 'x1ey2m1c') and not(ancestor::*[contains(@aria-label, 'comment') or contains(@aria-label, 'Comment')])]//img[@src]",
+                "//div[contains(@class, 'scaledImageFitWidth')]//img[@src]",
+                "//div[contains(@data-testid, 'photo')]//img[@src]",
+                
+                # Broader search excluding comments
+                "//div[@role='article']//img[@src and not(ancestor::*[contains(@aria-label, 'comment') or contains(@aria-label, 'Comment') or contains(@class, 'comment')])]",
+            ]
+            
+            all_images = []
+            
+            for idx, selector in enumerate(post_content_selectors):
+                try:
+                    img_elements = self.driver.find_elements(By.XPATH, selector)
+                    logger.info(f"[Image Extraction] Post-content selector {idx+1}: Found {len(img_elements)} images")
+                    
+                    if img_elements:
+                        all_images.extend(img_elements)
+                        # If Facebook CDN selector finds images, prioritize those
+                        if idx < 3 and img_elements:  # First 3 are FB CDN selectors
+                            logger.info("[Image Extraction] Using Facebook CDN post-content images (priority)")
+                            break
+                            
+                except Exception as e:
+                    logger.warning(f"[Image Extraction] Post-content selector {idx+1} failed: {e}")
+                    continue
+            
+            # STRATEGY 2: If no images found, use position-based approach
+            if not all_images:
+                logger.info("[Image Extraction] No images found in post content, trying position-based approach...")
+                
+                position_selectors = [
+                    # Get first few images in article, likely to be post content
+                    "(//div[@role='article']//img[@src])[1]",
+                    "(//div[@role='article']//img[@src])[2]",
+                    "(//div[@role='article']//img[@src])[3]",
+                ]
+                
+                for selector in position_selectors:
+                    try:
+                        img_elements = self.driver.find_elements(By.XPATH, selector)
+                        if img_elements:
+                            all_images.extend(img_elements)
+                    except Exception as e:
+                        logger.warning(f"[Image Extraction] Position selector failed: {e}")
+                        continue
+            
+            logger.info(f"[Image Extraction] Total found {len(all_images)} <img> elements.")
+            
+            # Enhanced filtering specifically for emoji/sticker prevention
+            processed_urls = set()
+            valid_images = []
+            
+            for idx, img in enumerate(all_images):
+                try:
+                    src = img.get_attribute('src') or img.get_attribute('data-src') or img.get_attribute('data-lazy-src')
+                    alt = img.get_attribute('alt') or ""
+                    
+                    # Get image dimensions and other attributes
+                    width = img.get_attribute('width')
+                    height = img.get_attribute('height')
+                    class_name = img.get_attribute('class') or ""
+                    
+                    logger.info(f"[Image Extraction] img[{idx}] src: {src}")
+                    logger.info(f"[Image Extraction] img[{idx}] alt: {alt}")
+                    logger.info(f"[Image Extraction] img[{idx}] dimensions: {width}x{height}")
+                    logger.info(f"[Image Extraction] img[{idx}] class: {class_name}")
+                    
+                    # Skip if no src or already processed
+                    if not src or src in processed_urls:
+                        continue
+                        
+                    processed_urls.add(src)
+                    
+                    # ENHANCED FILTERING FOR EMOJIS/STICKERS/REACTIONS
+                    emoji_sticker_patterns = [
+                        # Direct emoji/reaction indicators
+                        'emoji', 'sticker', 'reaction', 'like', 'love', 'angry', 'sad', 'wow', 'haha', 'care',
+                        'thumbs', 'heart', 'face', 'smile', 'cry', 'laugh',
+                        
+                        # Facebook specific reaction patterns
+                        'reactions', 'feelings', 'activity',
+                        
+                        # UI elements
+                        'profile', 'avatar', 'static', 'icon', 'badge', 'button', 'logo', 'ads', 'sponsored',
+                        'menu', 'dropdown', 'tooltip', 'overlay',
+                        
+                        # Comment section indicators
+                        'comment', 'reply', 'thread'
+                    ]
+                    
+                    should_skip = False
+                    skip_reason = ""
+                    
+                    # Check URL patterns
+                    for pattern in emoji_sticker_patterns:
+                        if pattern.lower() in src.lower():
+                            should_skip = True
+                            skip_reason = f"URL contains '{pattern}'"
+                            break
+                    
+                    # Check alt text for emoji indicators
+                    if not should_skip and alt:
+                        alt_lower = alt.lower()
+                        for pattern in emoji_sticker_patterns:
+                            if pattern in alt_lower:
+                                should_skip = True
+                                skip_reason = f"Alt text contains '{pattern}'"
+                                break
+                    
+                    # Check class names for emoji indicators
+                    if not should_skip and class_name:
+                        class_lower = class_name.lower()
+                        for pattern in ['emoji', 'reaction', 'sticker', 'icon']:
+                            if pattern in class_lower:
+                                should_skip = True
+                                skip_reason = f"Class contains '{pattern}'"
+                                break
+                    
+                    # Size filtering (emojis are typically small) - BUT be less aggressive
+                    if not should_skip and width and height:
+                        try:
+                            w, h = int(width), int(height)
+                            # Only skip VERY small images (likely emojis/icons)
+                            if w <= 16 or h <= 16:
+                                should_skip = True
+                                skip_reason = f"Very small ({w}x{h}) - likely emoji/icon"
+                            # Only skip tiny perfect squares (clear emojis)
+                            elif w == h and w <= 32:
+                                should_skip = True
+                                skip_reason = f"Tiny square ({w}x{h}) - likely emoji"
+                        except ValueError:
+                            pass
+                    
+                    # File format filtering
+                    if not should_skip:
+                        if (src.endswith(('.svg', '.gif', '.ico')) or 
+                            src.startswith(('data:', 'blob:')) or
+                            len(src) < 30):  # Very short URLs often point to icons
+                            should_skip = True
+                            skip_reason = "Invalid format or too short"
+                    
+                    if should_skip:
+                        logger.info(f"[Image Extraction] Skipping img[{idx}]: {skip_reason}")
+                        continue
+                    
+                    # POSITION-BASED FILTERING: Check if image is likely in comment section
+                    try:
+                        # Get the image's position in the DOM relative to comment indicators
+                        parent_element = img.find_element(By.XPATH, "./ancestor::*[contains(@aria-label, 'comment') or contains(@aria-label, 'Comment') or contains(@class, 'comment')][1]")
+                        if parent_element:
+                            should_skip = True
+                            skip_reason = "Found in comment section"
+                            logger.info(f"[Image Extraction] Skipping img[{idx}]: {skip_reason}")
+                            continue
+                    except:
+                        # No comment parent found - this is good
+                        pass
+                    
+                    # Score the image for quality (prioritize actual post images)
+                    score = 0
+                    
+                    # Prefer Facebook CDN images
+                    if 'scontent' in src:
+                        score += 20
+                        logger.info(f"[Image Extraction] +20 points: Facebook CDN")
+                    
+                    # Prefer larger images
+                    if width and height:
+                        try:
+                            w, h = int(width), int(height)
+                            if w > 400 and h > 300:
+                                score += 15
+                                logger.info(f"[Image Extraction] +15 points: large size ({w}x{h})")
+                            elif w > 200 and h > 150:
+                                score += 10
+                                logger.info(f"[Image Extraction] +10 points: medium size ({w}x{h})")
+                            elif w > 100 and h > 100:
+                                score += 5
+                                logger.info(f"[Image Extraction] +5 points: decent size ({w}x{h})")
+                        except:
+                            pass
+                    
+                    # Prefer images with meaningful alt text (but not emoji descriptions)
+                    if alt and len(alt.strip()) > 10 and not any(word in alt.lower() for word in ['emoji', 'sticker', 'reaction']):
+                        score += 8
+                        logger.info(f"[Image Extraction] +8 points: meaningful alt text")
+                    
+                    # Prefer HTTPS URLs
+                    if src.startswith('https://'):
+                        score += 2
+                    
+                    # Bonus for being early in the DOM (likely post content, not comments)
+                    if idx < 3:
+                        score += 5
+                        logger.info(f"[Image Extraction] +5 points: early in DOM (position {idx})")
+                    
+                    valid_images.append({
+                        'url': src,
+                        'score': score,
+                        'alt': alt,
+                        'index': idx,
+                        'dimensions': f"{width}x{height}" if width and height else "unknown"
+                    })
+                    
+                    logger.info(f"[Image Extraction] Valid post image (score: {score}): {src}")
+                    
+                except Exception as e:
+                    logger.warning(f"[Image Extraction] Error processing img[{idx}]: {e}")
+                    continue
+        
+            if valid_images:
+                # Sort by score (highest first), then by index (first found)
+                valid_images.sort(key=lambda x: (-x['score'], x['index']))
+                best_image = valid_images[0]
+                logger.info(f"[Image Extraction] ✅ Returning best image (score: {best_image['score']}, dimensions: {best_image['dimensions']}): {best_image['url']}")
+                return best_image['url']
+            
+            # FALLBACK: If no valid images found, try a more permissive approach
+            logger.info("[Image Extraction] No valid images found, trying fallback approach...")
+            try:
+                # Get ANY image in the article that's not clearly an emoji
+                fallback_images = self.driver.find_elements(By.XPATH, "//div[@role='article']//img[@src]")
+                for idx, img in enumerate(fallback_images):
+                    try:
+                        src = img.get_attribute('src')
+                        alt = img.get_attribute('alt') or ""
+                        
+                        # Very basic filtering - only skip obvious emojis
+                        if (src and 
+                            'emoji' not in src.lower() and 
+                            'static.xx.fbcdn.net/images/emoji' not in src and
+                            len(src) > 50):  # Reasonably long URL
+                            
+                            logger.info(f"[Image Extraction] ✅ FALLBACK: Using image {idx}: {src}")
+                            return src
+                            
+                    except Exception as e:
+                        continue
+                        
+            except Exception as e:
+                logger.warning(f"[Image Extraction] Fallback approach failed: {e}")
+                
+            logger.info("[Image Extraction] ⚠️ No suitable post image found, returning empty string.")
             return ""
+            
         except Exception as e:
-            logger.error(f"[Image Extraction] Exception: {e}")
+            logger.error(f"[Image Extraction] ❌ Exception: {e}")
             return ""
-    
 
+    def wait_for_images_to_load(self):
+        """
+        Enhanced waiting strategy to ensure images are loaded, with focus on post content.
+        """
+        try:
+            logger.info("[Image Loading] Waiting for post images to load...")
+            
+            # Scroll to trigger lazy loading, but not too far (to avoid comment section)
+            self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight * 0.3);")
+            time.sleep(1)
+            self.driver.execute_script("window.scrollTo(0, 0);")
+            time.sleep(1)
+            
+            # Wait for main post images to appear
+            try:
+                WebDriverWait(self.driver, 10).until(
+                    lambda driver: len(driver.find_elements(By.XPATH, "//div[@role='article']//img[@src and contains(@src, 'scontent')]")) > 0
+                )
+                logger.info("[Image Loading] Facebook CDN images detected")
+            except TimeoutException:
+                logger.warning("[Image Loading] No Facebook CDN images found, checking for any images...")
+                try:
+                    WebDriverWait(self.driver, 5).until(
+                        lambda driver: len(driver.find_elements(By.XPATH, "//div[@role='article']//img[@src]")) > 0
+                    )
+                    logger.info("[Image Loading] Some images detected")
+                except TimeoutException:
+                    logger.warning("[Image Loading] No images found on page")
+            
+            # Additional wait for image attributes to fully populate
+            time.sleep(3)
+            
+            # Log what we found for debugging
+            fb_cdn_images = self.driver.find_elements(By.XPATH, "//div[@role='article']//img[@src and contains(@src, 'scontent')]")
+            all_images = self.driver.find_elements(By.XPATH, "//div[@role='article']//img[@src]")
+            logger.info(f"[Image Loading] Found {len(fb_cdn_images)} Facebook CDN images, {len(all_images)} total images")
+            
+        except Exception as e:
+            logger.error(f"[Image Loading] Error: {e}")
+
+    # Additional helper method to validate the extracted image
+    def validate_extracted_image(self, image_url):
+        """
+        Quick validation to ensure the extracted image is likely a real post image.
+        """
+        if not image_url:
+            return False, "No URL provided"
+        
+        # Check URL patterns that suggest it's NOT a post image
+        bad_patterns = ['emoji', 'sticker', 'reaction', 'profile', 'avatar', 'static', 'icon']
+        for pattern in bad_patterns:
+            if pattern.lower() in image_url.lower():
+                return False, f"URL contains suspicious pattern: {pattern}"
+        
+        # Check if it's a Facebook CDN image (good sign)
+        if 'scontent' in image_url:
+            return True, "Facebook CDN image"
+        
+        # Check URL length (very short URLs often point to icons)
+        if len(image_url) < 50:
+            return False, "URL too short"
+        
+        return True, "Passed basic validation"
+    
+    def get_live_screenshot(self):
+        """
+        Capture and return a screenshot of the current browser window.
+        Used by the API endpoint /bot/live-screenshot for monitoring.
+        """
+        try:
+            if not self.driver:
+                logger.error("No driver instance available for screenshot")
+                return None
+                
+            # Get screenshot as PNG bytes
+            screenshot = self.driver.get_screenshot_as_png()
+            logger.debug("Successfully captured live screenshot")
+            return screenshot
+            
+        except Exception as e:
+            logger.error(f"Failed to capture screenshot: {e}")
+            return None
+    
+    def perform_startup_health_checks(self):
+        """
+        Perform comprehensive health checks before starting bot operations
+        
+        Returns:
+            bool: True if all checks pass, False otherwise
+        """
+        logger.info("=" * 60)
+        logger.info("🏥 Starting health checks...")
+        logger.info("=" * 60)
+        
+        checks_passed = True
+        
+        # Check 1: WebDriver Session
+        logger.info("1️⃣ Checking WebDriver session...")
+        try:
+            if not self.driver or not self.driver.session_id:
+                logger.error("❌ No WebDriver session")
+                return False
+                
+            # Test WebDriver responsiveness
+            user_agent = self.driver.execute_script("return navigator.userAgent;")
+            logger.info(f"✅ WebDriver is responsive (User-Agent: {user_agent[:50]}...)")
+        except Exception as e:
+            logger.error(f"❌ WebDriver not responding: {e}")
+            return False
+        
+        # Check 2: Facebook Login Status
+        logger.info("2️⃣ Checking Facebook login status...")
+        try:
+            self.driver.get("https://www.facebook.com")
+            time.sleep(3)
+            
+            # Check for login indicators
+            login_indicators = [
+                "//div[@role='navigation']",  # Main navigation bar
+                "//div[@aria-label='Your profile']",  # Profile button
+                "//div[@aria-label='Account']",  # Account menu
+                "//a[contains(@href, '/friends')]",  # Friends link
+                "//a[contains(@href, '/groups')]"  # Groups link
+            ]
+            
+            logged_in = False
+            for indicator in login_indicators:
+                try:
+                    elements = self.driver.find_elements(By.XPATH, indicator)
+                    if elements:
+                        logged_in = True
+                        logger.info(f"✅ Facebook login confirmed (found: {indicator})")
+                        break
+                except:
+                    continue
+            
+            if not logged_in:
+                # Check if we're on login page
+                if "login" in self.driver.current_url.lower() or "Log in" in self.driver.title:
+                    logger.error("❌ Not logged into Facebook - redirected to login page")
+                    logger.error("Please log into Facebook manually in Chrome first")
+                    return False
+                else:
+                    logger.warning("⚠️ Could not confirm login status, but not on login page. Proceeding...")
+                    
+        except Exception as e:
+            logger.error(f"❌ Failed to check Facebook login: {e}")
+            return False
+        
+        # Check 3: Network Connectivity
+        logger.info("3️⃣ Checking network connectivity...")
+        try:
+            import socket
+            socket.create_connection(("www.facebook.com", 443), timeout=5)
+            logger.info("✅ Network connection to Facebook is working")
+        except Exception as e:
+            logger.error(f"❌ Network connection failed: {e}")
+            return False
+        
+        # Check 4: Chrome Profile
+        logger.info("4️⃣ Checking Chrome profile...")
+        try:
+            profile_dir = os.path.join(os.getcwd(), "chrome_data")
+            if os.path.exists(profile_dir):
+                logger.info(f"✅ Chrome profile directory exists: {profile_dir}")
+            else:
+                logger.warning(f"⚠️ Chrome profile directory not found: {profile_dir}")
+        except Exception as e:
+            logger.warning(f"⚠️ Could not verify Chrome profile: {e}")
+        
+        # Check 5: Required Configuration
+        logger.info("5️⃣ Checking configuration...")
+        required_config = ['POST_URL', 'COMMENT_BOX_XPATH', 'templates']
+        for key in required_config:
+            if key not in self.config or not self.config[key]:
+                logger.error(f"❌ Missing required configuration: {key}")
+                checks_passed = False
+            else:
+                logger.info(f"✅ Configuration '{key}' is present")
+        
+        # Final Summary
+        logger.info("=" * 60)
+        if checks_passed:
+            logger.info("✅ All health checks passed! Bot is ready to start.")
+        else:
+            logger.error("❌ Some health checks failed. Please fix issues before proceeding.")
+        logger.info("=" * 60)
+        
+        return checks_passed
+    
     def run(self):
         logger.critical("!!! TEST LOG: FacebookAICommentBot.run() STARTED !!!")
         try:
             self.setup_driver()
+            
+            # Perform health checks before proceeding
+            if not self.perform_startup_health_checks():
+                logger.error("Startup health checks failed. Exiting...")
+                if self.driver:
+                    self.driver.quit()
+                return
+            
             self.start_posting_thread()
             url = self.config['POST_URL']
             self.driver.get(url)
@@ -1841,140 +2950,167 @@ class FacebookAICommentBot:
                 logger.info("Detected group URL. Entering continuous scan mode for today's posts.")
                 while True:
                     logger.info("Starting a new scan cycle for today's posts...")
-                    time.sleep(5)
+                    
+                    # Navigate back to the group feed to get fresh content
+                    logger.info("Refreshing group feed to check for new posts...")
+                    self.driver.get(url)
+                    time.sleep(5)  # Wait for page to load
+                    
                     all_post_links = self.scroll_and_collect_post_links()
                     logger.info(f"Collected {len(all_post_links)} post links from feed.")
                     new_posts = 0
+                    
                     for post_url in all_post_links:
                         if db.is_post_processed(post_url):
                             logger.info(f"Skipping already processed post: {post_url}")
                             continue
+                            
                         logger.info(f"Navigating to post: {post_url}")
                         retry_count = 0
+                        
                         while retry_count < 3:
                             try:
-                                clean_url = post_url.split('?')[0] if '?' in post_url else post_url
-                                logger.info(f"Cleaned URL: {clean_url}")
-                                if '/photo/' in clean_url:
-                                    logger.warning(f"🚫 BLOCKING photo URL that got through filtering: {clean_url}")
-                                    self.save_processed_post(post_url, post_text="", post_type="skip", error_message="Photo URL blocked by safety filter")
-                                    break
-                                if len(clean_url) < 80:
-                                    logger.warning(f"🚫 BLOCKING suspiciously short URL: {clean_url}")
-                                    self.save_processed_post(post_url, post_text="", post_type="skip", error_message="URL too short - likely broken")
-                                    break
-                                self.driver.get(clean_url)
-                                time.sleep(5)
-                                if not self.is_post_accessible(clean_url):
-                                    logger.info(f"❌ Skipping broken/removed post: {post_url}")
-                                    self.save_processed_post(post_url, post_text="", post_type="skip", error_message="Post is broken/removed")
-                                    break
-                                post_image_url = self.extract_first_image_url()
-                                logger.info(f"[CRM Queue] Extracted image URL to send: {post_image_url}")
-                                if not self.is_post_from_today():
-                                    logger.info(f"Skipping post not from today: {post_url}")
-                                    break
+                                # Store original URL for database/UI
+                                original_post_url = post_url
+                                
+                                # For photo URLs, keep the original URL with parameters
+                                if '/photo/' in post_url and 'fbid=' in post_url:
+                                    # Photo URLs need their parameters to work properly
+                                    navigation_url = post_url
+                                    logger.info(f"Using photo URL with parameters: {navigation_url}")
+                                else:
+                                    # For other URLs, remove query parameters for navigation but keep original for storage
+                                    navigation_url = post_url.split('?')[0] if '?' in post_url else post_url
+                                    logger.info(f"Navigation URL: {navigation_url}, Original: {original_post_url}")
+                                
+                                self.driver.get(navigation_url)
+                                logger.critical(f"!!! TEST LOG: Navigated to: {navigation_url}")
+                                logger.critical(f"!!! TEST LOG: Will store as: {original_post_url}")
+                                
+                                # Verify we're on the right page after navigation
+                                actual_url = self.driver.current_url
+                                logger.info(f"Actual page after navigation: {actual_url[:100]}...")
+                                
+                                # Validate URL consistency for debugging
+                                if '/photo/' in original_post_url and '/photo/' not in actual_url:
+                                    logger.warning(f"⚠️ URL mismatch detected!")
+                                    logger.warning(f"Original: {original_post_url}")
+                                    logger.warning(f"Navigation: {navigation_url}")
+                                    logger.warning(f"Actual: {actual_url}")
+                                elif '/posts/' in original_post_url and '/posts/' not in actual_url:
+                                    logger.warning(f"⚠️ Post URL mismatch detected!")
+                                    logger.warning(f"Original: {original_post_url}")
+                                    logger.warning(f"Actual: {actual_url}")
+                                
+                                # Enhanced wait time for Facebook's dynamic loading
+                                time.sleep(4)  # Reduced from 8 to 4 seconds for faster processing
+                                
+                                # Image extraction will be handled by the CRM ingestion process
                                 logger.critical("DEBUG: About to get post text")
                                 post_text = self.get_post_text()
-                                if not post_text.strip():
-                                    logger.info(f"No post text found, marking as processed: {post_url}")
-                                    self.save_processed_post(post_url, post_text="", error_message="No text extracted")
-                                    break
-                                logger.critical("DEBUG: About to get existing comments")
-                                existing_comments = self.get_existing_comments()
-                                logger.info(f"Found {len(existing_comments)} existing comments")
-                                logger.critical("DEBUG: About to get post author")
-                                post_author = self.get_post_author()
-                                logger.info(f"🔍 Raw author name extracted: '{post_author}' (type: {type(post_author)})")
-                                if post_author:
-                                    logger.info(f"✅ Post author found: {post_author}")
-                                else:
-                                    logger.warning("⚠️ No author name extracted, will use generic greeting")
-                                classification = self.classifier.classify_post(post_text)
-                                logger.info(f"Post classified as: {classification.post_type} (score: {classification.confidence_score:.2f})")
-                                if classification.should_skip:
-                                    logger.info(f"Post filtered out. Reasoning: {'; '.join(classification.reasoning)}")
-                                    self.save_processed_post(post_url, post_text=post_text, post_type="skip")
-                                    break
-                                if self.duplicate_detector.already_commented(existing_comments):
-                                    logger.info("Bravo already commented. Skipping post.")
-                                    self.save_processed_post(post_url, post_text=post_text, post_type="skip")
-                                    break
-                                logger.info(f"🔍 Generating comment for type: {classification.post_type}")
-                                logger.info(f"🔍 Using author name: '{post_author}'")
-                                comment = self.comment_generator.generate_comment(classification.post_type, post_text, post_author)
-                                if comment:
-                                    logger.info(f"✅ Generated comment: {comment[:100]}...")
-                                    if post_author:
-                                        first_name = self.comment_generator.extract_first_name(post_author)
-                                        if first_name and first_name in comment:
-                                            logger.info(f"✅ First name '{first_name}' found in final comment")
-                                        elif "Hi there!" in comment:
-                                            logger.info(f"ℹ️ Using generic greeting (name validation failed)")
-                                        else:
-                                            logger.info(f"ℹ️ Comment generated with different personalization")
+                                logger.critical(f"DEBUG: Extracted post text: {post_text[:100] if post_text else 'None'}...")
+                                
+                                # Handle posts with minimal text but images
+                                if not post_text or len(post_text.strip()) < 10:
+                                    # Extract images first to see if this is an image-only post
+                                    logger.info("Minimal text found, checking for images...")
+                                    post_images = self.extract_first_image_url()
+                                    images_list = [post_images] if post_images else []
+                                    
+                                    if images_list:
+                                        logger.info(f"Image-only post detected with {len(images_list)} images")
+                                        post_text = "Image-only post"
+                                        post_type = "general"
+                                        
+                                        # Generate AI comment for image post
+                                        generator = ExternalCommentGenerator(self.config, database=db)
+                                        ai_comment = generator.generate_comment(post_type, "Beautiful image post", "")
+                                        
+                                        # Add to queue with image - use original URL
+                                        images_json = json.dumps(images_list)
+                                        queue_id = db.add_to_comment_queue(
+                                            post_url=original_post_url,
+                                            post_text=post_text,
+                                            comment_text=ai_comment,
+                                            post_type=post_type,
+                                            post_images=images_json,
+                                            post_author=self.get_post_author(),
+                                            post_engagement="Image post"
+                                        )
+                                        
+                                        if queue_id:
+                                            logger.info(f"Image-only post added to queue with ID: {queue_id}")
+                                            new_posts += 1
+                                        
+                                        db.save_processed_post(original_post_url, post_text, post_type, ai_comment)
+                                        break
                                     else:
-                                        logger.info(f"ℹ️ Comment generated without author name (generic greeting)")
-                                else:
-                                    logger.error("❌ Failed to generate comment")
-                                if not comment:
-                                    logger.info(f"Skipping post (filtered or duplicate): {post_url}")
-                                    logger.info(f"Post text length: {len(post_text)} characters")
-                                    logger.info(f"Post text preview: {post_text[:200]}...")
-                                    self.save_processed_post(post_url, post_text=post_text, post_type="skip")
-                                    break
-                                logger.info(f"Generated comment: {comment[:100]}...")
-                                safe_post_url = str(post_url) if post_url else ""
-                                safe_post_text = str(post_text) if post_text else ""
-                                safe_comment_text = str(comment) if comment else ""
-                                safe_post_type = classification.post_type
-                                logger.info(f"Parameter types before DB call:")
-                                logger.info(f"  post_url: {type(safe_post_url)} = {safe_post_url[:50]}...")
-                                logger.info(f"  post_text: {type(safe_post_text)} = {safe_post_text[:50]}...")
-                                logger.info(f"  comment_text: {type(safe_comment_text)} = {safe_comment_text[:50]}...")
-                                logger.info(f"  post_type: {type(safe_post_type)} = {safe_post_type}")
-                                logger.info(f"  post_images: {post_image_url}")
-                                try:
-                                    queue_id = db.add_to_comment_queue(
-                                        post_url=safe_post_url, 
-                                        post_text=safe_post_text, 
-                                        comment_text=safe_comment_text, 
-                                        post_type=safe_post_type,
-                                        post_screenshot="",          # ← Use empty string instead of None
-                                        post_images=post_image_url,    # Now set to the extracted image URL
-                                        post_author=post_author if post_author else "",  # ← Use actual author name
-                                        post_engagement=""           # ← Use empty string instead of None
-                                    )
-                                    logger.info(f"🔄 Adding comment to approval queue: {post_url}")
-                                    logger.info(f"🔄 Adding to comment queue: {safe_post_type} - {safe_post_url[:50]}...")
-                                    logger.info(f"📝 Comment text: {safe_comment_text[:50]}...")
-                                    # Send to posting queue for background posting
-                                    self.posting_queue.put((safe_post_url, safe_comment_text))
-                                except Exception as db_error:
-                                    logger.error(f"Failed to add comment to queue: {db_error}")
-                                    logger.error(f"❌ Failed to add comment to database queue")
-                                    logger.error(f"❌ Failed to queue comment for approval: {post_url}")
-                                    self.save_processed_post(post_url, post_text=post_text, post_type="service", error_message=f"Database error: {db_error}")
-                                    continue
+                                        logger.info(f"No meaningful content found, skipping post: {original_post_url}")
+                                        db.save_processed_post(original_post_url, "", "skipped", "")
+                                        continue
+                                
+                                # Extract images from the post
+                                logger.info("Extracting images from post...")
+                                post_images = self.extract_first_image_url()
+                                images_list = [post_images] if post_images else []
+                                logger.info(f"Found {len(images_list)} images")
+                                
+                                # Classify the post type
+                                logger.info("Classifying post type...")
+                                classifier = PostClassifier(self.config)
+                                classification = classifier.classify_post(post_text)
+                                post_type = classification.category
+                                logger.info(f"Post classified as: {post_type} (confidence: {classification.confidence:.2f})")
+                                
+                                # Generate AI comment
+                                logger.info("Generating AI comment...")
+                                generator = ExternalCommentGenerator(self.config, database=db)
+                                
+                                # Try to extract author name for personalization
+                                post_author = self.get_post_author()
+                                ai_comment = generator.generate_comment(post_type, post_text, post_author)
+                                logger.info(f"Generated comment: {ai_comment[:100]}...")
+                                
+                                # Convert images list to JSON for database storage
+                                images_json = json.dumps(images_list) if images_list else None
+                                
+                                # Add to comment queue for approval - use original URL
+                                logger.info("Adding to comment approval queue...")
+                                queue_id = db.add_to_comment_queue(
+                                    post_url=original_post_url,
+                                    post_text=post_text,
+                                    comment_text=ai_comment,
+                                    post_type=post_type,
+                                    post_images=images_json,
+                                    post_author=post_author,
+                                    post_engagement=f"Score: {classification.confidence:.2f}"
+                                )
+                                
                                 if queue_id:
-                                    logger.info(f"✅ Successfully added comment to queue (ID: {queue_id}): {post_url}")
-                                    self.save_processed_post(post_url, post_text=post_text, post_type="service", comment_generated=True, comment_text=comment)
+                                    logger.info(f"Successfully added to comment queue with ID: {queue_id}")
                                     new_posts += 1
                                 else:
-                                    logger.error(f"❌ Failed to add comment to queue: {post_url}")
-                                    self.save_processed_post(post_url, post_text=post_text, post_type="service", error_message="Failed to queue comment")
-                                # Continue to next post
+                                    logger.error("Failed to add comment to queue")
+                                
+                                # Mark post as processed - use original URL
+                                db.save_processed_post(original_post_url, post_text, post_type, ai_comment)
+                                logger.info(f"Post processed successfully: {original_post_url}")
+                                
+                                break  # Success, exit retry loop
+                                
                             except Exception as e:
                                 if 'stale element reference' in str(e).lower():
-                                    logger.warning(f"Stale element error while loading post, retrying ({retry_count+1}/3)...")
+                                    logger.warning(f"Stale element error, retrying ({retry_count+1}/3)...")
                                     retry_count += 1
-                                    time.sleep(2)
+                                    time.sleep(3)  # Longer wait before retry
                                     continue
                                 else:
-                                    logger.warning(f"Failed to process post: {post_url} | Reason: {e}")
+                                    logger.error(f"Failed to process post: {original_post_url} | Error: {e}")
                                     break
-                    logger.info(f"Scan cycle complete. Commented on {new_posts} new posts. Starting next scan in 30 seconds...")
-                    time.sleep(30)
+                                    
+                    logger.info(f"Scan cycle complete. Processed {new_posts} new posts. Next scan in 8 seconds...")
+                    time.sleep(8)
+                    
         except Exception as e:
             logger.critical(f"Bot execution failed: {e}")
         finally:
@@ -1984,6 +3120,7 @@ class FacebookAICommentBot:
             if hasattr(self, 'posting_driver') and self.posting_driver:
                 self.posting_driver.quit()
                 logger.info("Background posting browser closed.")
+
 
 # Example for testing:
 if __name__ == "__main__":

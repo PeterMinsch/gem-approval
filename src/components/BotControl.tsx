@@ -14,7 +14,6 @@ import { Badge } from "./ui/badge";
 import { Switch } from "./ui/switch";
 import { Separator } from "./ui/separator";
 import { Alert, AlertDescription } from "./ui/alert";
-import CRM from "../pages/CRM";
 import {
   Loader2,
   Play,
@@ -669,21 +668,6 @@ export const BotControl: React.FC = () => {
         </CardContent>
       </Card>
 
-      {/* CRM Dashboard - Approval Queue */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Database className="h-5 w-5" />
-            Approval Queue
-          </CardTitle>
-          <CardDescription>
-            Review and approve posts as the bot processes them
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <CRM />
-        </CardContent>
-      </Card>
 
       {/* Live Browser View */}
       <Card>
