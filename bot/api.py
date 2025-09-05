@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -123,8 +123,8 @@ app.add_middleware(
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 # Import and include image pack router
-# from image_pack_api import router as image_pack_router
-# app.include_router(image_pack_router, prefix="/api")
+from image_pack_api import router as image_pack_router
+app.include_router(image_pack_router, prefix="/api")
 
 # Global bot instance and status
 
@@ -205,6 +205,7 @@ class CommentApprovalRequest(BaseModel):
     action: str  # "approve", "reject", "edit"
     edited_comment: Optional[str] = None
     rejection_reason: Optional[str] = None
+    images: Optional[List[str]] = None  # List of image filenames to attach
 
 class CommentApprovalResponse(BaseModel):
     success: bool
@@ -300,13 +301,14 @@ class TemplateDeleteResponse(BaseModel):
 # Pending approvals queue for when bot is initializing
 pending_approvals = []
 
-def queue_approval_for_later(comment_id: str, post_url: str, comment_text: str) -> bool:
+def queue_approval_for_later(comment_id: str, post_url: str, comment_text: str, images: List[str] = None) -> bool:
     """Queue an approval for later processing when bot becomes available"""
     try:
         approval_data = {
             "comment_id": comment_id,
             "post_url": post_url,
             "comment_text": comment_text,
+            "images": images,
             "timestamp": time.time()
         }
         pending_approvals.append(approval_data)
@@ -339,11 +341,12 @@ def process_pending_approvals():
             comment_id = approval["comment_id"]
             post_url = approval["post_url"]
             comment_text = approval["comment_text"]
+            images = approval.get("images", None)
             
             logger.info(f"🔄 Processing pending approval for comment {comment_id}")
             
             # Try to post now that bot is ready
-            success = post_comment_realtime(comment_id, post_url, comment_text, _from_pending=True)
+            success = post_comment_realtime(comment_id, post_url, comment_text, images=images, _from_pending=True)
             if success:
                 processed_count += 1
                 logger.info(f"✅ Successfully processed pending approval for comment {comment_id}")
@@ -362,8 +365,8 @@ def process_pending_approvals():
         logger.info(f"✅ Processed {processed_count} pending approvals")
 
 # Comment queue management functions  
-def post_comment_realtime(comment_id: str, post_url: str, comment_text: str, _from_pending=False) -> bool:
-    """Post a comment in real-time using the dedicated headless posting browser"""
+def post_comment_realtime(comment_id: str, post_url: str, comment_text: str, images: List[str] = None, _from_pending=False) -> bool:
+    """Post a comment in real-time using the dedicated headless posting browser with optional images"""
     try:
         global bot_instance
         
@@ -378,8 +381,8 @@ def post_comment_realtime(comment_id: str, post_url: str, comment_text: str, _fr
             global bot_status
             if bot_status.get("is_running", False):
                 logger.info("🔄 Bot is initializing, will retry posting in background...")
-                # Queue the approval for later processing when bot is ready
-                return queue_approval_for_later(comment_id, post_url, comment_text)
+                # Queue the approval for later processing when bot is ready  
+                return queue_approval_for_later(comment_id, post_url, comment_text, images)
             else:
                 logger.error("❌ Bot instance not available and not running")
                 return False
@@ -387,6 +390,8 @@ def post_comment_realtime(comment_id: str, post_url: str, comment_text: str, _fr
         # 🚀 NEW: Use the dedicated posting queue instead of main browser
         logger.info(f"🚀 Queueing comment {comment_id} for real-time posting via dedicated browser")
         logger.info(f"📝 Comment text: {comment_text[:100] if comment_text else 'None'}...")
+        if images:
+            logger.info(f"🖼️ With {len(images)} image(s): {images}")
         
         try:
             # Check if posting infrastructure is available
@@ -394,10 +399,10 @@ def post_comment_realtime(comment_id: str, post_url: str, comment_text: str, _fr
                 logger.error("❌ Posting queue not available - bot may not be fully initialized")
                 return False
             
-            # Add to the posting queue with comment ID for tracking
-            # Format: (post_url, comment_text, comment_id)
+            # Add to the posting queue with comment ID and images for tracking
+            # Format: (post_url, comment_text, comment_id, images)
             logger.info(f"📤 Adding comment to posting queue: {post_url}")
-            bot_instance.posting_queue.put((post_url, comment_text, comment_id))
+            bot_instance.posting_queue.put((post_url, comment_text, comment_id, images))
             
             # Update status to "posting" to indicate we've queued it
             queue_id = int(comment_id)
@@ -532,6 +537,38 @@ def reject_comment(comment_id: str, reason: str) -> bool:
 
 
 
+
+def run_bot_in_background(post_url: str = None, max_scrolls: int = None, 
+                         continuous_mode: bool = False, clear_database: bool = False):
+    """Background wrapper function to start the bot with proper parameter handling"""
+    global bot_instance, bot_status
+    
+    try:
+        logger.info("🚀 Starting bot in background...")
+        
+        # Clear database if requested
+        if clear_database:
+            logger.info("🗑️ Clearing database as requested...")
+            db.clear_database()
+            logger.info("✅ Database cleared")
+        
+        # Create bot instance with config
+        config = CONFIG.copy()
+        if post_url:
+            config["POST_URL"] = post_url
+            
+        bot_instance = FacebookAICommentBot(config)
+        bot_status["is_running"] = True
+        bot_status["start_time"] = datetime.now().isoformat()
+        
+        # Start the bot using the existing function
+        run_bot_with_queuing(bot_instance, max_scrolls)
+        
+    except Exception as e:
+        logger.error(f"❌ Error in background bot: {e}")
+        bot_status["is_running"] = False
+        bot_status["error_message"] = str(e)
+        raise
 
 def run_bot_with_queuing(bot_instance: FacebookAICommentBot, max_scrolls: int = None):
     """Run the bot with CRM ingestion instead of old comment queuing"""
@@ -1006,11 +1043,18 @@ async def get_comment_templates():
         }
         
         if db_templates:
-            for template in db_templates:
-                post_type = category_to_type.get(template.get("category"), "general")
+            # db_templates is a dict with post_type keys and template lists as values
+            # Get all database templates and organize by post type
+            all_db_templates = db.get_templates()  # Get all template objects
+            
+            # Map database categories to post types
+            for template_obj in all_db_templates:
+                category = template_obj.get("category", "GENERIC")
+                post_type = category_to_type.get(category, "general")
+                
                 formatted_templates[post_type].append({
-                    "id": template["id"],
-                    "text": template["body"],
+                    "id": template_obj["id"],
+                    "text": template_obj["body"],
                     "post_type": post_type
                 })
         
@@ -1058,8 +1102,8 @@ async def approve_comment_endpoint(request: CommentApprovalRequest):
                     # Get the final comment text (could be edited)
                     final_comment_text = request.edited_comment or comment.generated_comment
                     
-                    # Post comment in real-time using the existing function
-                    posting_success = post_comment_realtime(request.comment_id, comment.post_url, final_comment_text)
+                    # Post comment in real-time using the existing function with images
+                    posting_success = post_comment_realtime(request.comment_id, comment.post_url, final_comment_text, images=request.images)
                     
                     if posting_success:
                         logger.info(f"✅ Comment {request.comment_id} approved and queued for posting!")
@@ -1110,8 +1154,8 @@ async def approve_comment_endpoint(request: CommentApprovalRequest):
                 # 🚀 NEW: Automatically trigger real-time posting after edit+approve
                 logger.info(f"🚀 Auto-posting edited comment {request.comment_id} in real-time...")
                 try:
-                    # Post the edited comment in real-time
-                    posting_success = post_comment_realtime(request.comment_id, comment.post_url, request.edited_comment)
+                    # Post the edited comment in real-time with images
+                    posting_success = post_comment_realtime(request.comment_id, comment.post_url, request.edited_comment, images=request.images)
                     
                     if posting_success:
                         logger.info(f"✅ Comment {request.comment_id} edited and queued for posting!")
@@ -1356,12 +1400,7 @@ async def get_live_screenshot():
     global bot_instance
     
     try:
-        # Debug: Check bot_instance state before checking driver
-        logger.info(f"DEBUG: bot_instance is None: {bot_instance is None}")
-        if bot_instance:
-            logger.info(f"DEBUG: bot_instance type: {type(bot_instance)}")
-            logger.info(f"DEBUG: bot_instance.driver is None: {bot_instance.driver is None}")
-            logger.info(f"DEBUG: bot_instance methods: {[method for method in dir(bot_instance) if not method.startswith('_')]}")
+        # Removed excessive debug logging that was causing performance issues
         
         if not bot_instance or not bot_instance.driver:
             raise HTTPException(status_code=400, detail="Bot is not running or browser not available")
@@ -1775,37 +1814,40 @@ async def get_fb_accounts():
         raise HTTPException(status_code=500, detail="Failed to get Facebook accounts")
 
 # Simple image pack endpoint for frontend
-@app.get("/api/image-packs")
-async def get_image_packs():
-    """Get all image packs for frontend"""
+@app.get("/api/serve-image/{filepath:path}")
+async def serve_image(filepath: str):
+    """Serve an image file from the uploads directory"""
     try:
-        packs = db.get_image_packs()
+        import os
+        from fastapi.responses import FileResponse
         
-        # Convert to frontend-compatible format
-        frontend_packs = []
-        for pack in packs:
-            # Handle mixed image formats
-            images = pack.get('images', [])
-            frontend_images = []
-            
-            if images:  # Only process if we have images
-                # If images is a list of objects with filename/description
-                if isinstance(images[0], dict) and 'filename' in images[0]:
-                    frontend_images = images  # Already in correct format
-                # If images is a list of simple strings (file paths)
-                elif isinstance(images[0], str):
-                    frontend_images = [{'filename': img, 'description': img.split('/')[-1]} for img in images]
-            
-            frontend_packs.append({
-                'id': pack['id'],
-                'name': pack['name'], 
-                'images': frontend_images
-            })
+        # Security: Remove any path traversal attempts
+        safe_path = os.path.normpath(filepath).replace('..', '')
         
-        return frontend_packs
+        # Construct full path
+        if safe_path.startswith('uploads/'):
+            full_path = safe_path
+        else:
+            full_path = os.path.join('uploads/image-packs/generic', safe_path)
+        
+        # Check if file exists
+        if not os.path.exists(full_path):
+            logger.error(f"Image not found: {full_path}")
+            raise HTTPException(status_code=404, detail="Image not found")
+        
+        # Serve the file
+        return FileResponse(
+            full_path,
+            media_type="image/jpeg",
+            headers={"Cache-Control": "public, max-age=3600"}
+        )
+        
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error getting image packs: {e}")
-        raise HTTPException(status_code=500, detail="Failed to get image packs")
+        logger.error(f"Error serving image {filepath}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to serve image")
+
 
 @app.get("/api/search")
 async def search_posts(q: str = "", status: Optional[str] = None, 

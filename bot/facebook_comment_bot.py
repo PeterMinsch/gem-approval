@@ -556,6 +556,14 @@ def setup_logger():
 
 logger = setup_logger()
 
+# Configure Selenium logging to prevent base64 screenshot data from being logged
+selenium_logger = logging.getLogger('selenium.webdriver.remote.remote_connection')
+selenium_logger.setLevel(logging.WARNING)  # Only show warnings and errors, not debug info
+
+# Also suppress urllib3 debug logs which Selenium uses
+urllib3_logger = logging.getLogger('urllib3.connectionpool')
+urllib3_logger.setLevel(logging.WARNING)
+
 # Legacy function wrappers for backward compatibility
 def classify_post(text: str) -> str:
     """Legacy wrapper for backward compatibility"""
@@ -625,6 +633,27 @@ class FacebookAICommentBot:
     def setup_posting_driver(self):
         """Set up a second browser for posting comments (non-headless for Facebook compatibility)."""
         try:
+            # Clean up any existing driver first
+            if hasattr(self, 'posting_driver') and self.posting_driver:
+                try:
+                    self.posting_driver.quit()
+                except:
+                    pass
+                self.posting_driver = None
+                
+            # Clean up any existing temp directory
+            if hasattr(self, '_temp_chrome_dir') and self._temp_chrome_dir:
+                try:
+                    import shutil
+                    if os.path.exists(self._temp_chrome_dir):
+                        shutil.rmtree(self._temp_chrome_dir)
+                        logger.debug(f"[POSTING THREAD] Cleaned up temp directory: {self._temp_chrome_dir}")
+                except Exception as e:
+                    logger.debug(f"[POSTING THREAD] Failed to cleanup temp directory: {e}")
+                self._temp_chrome_dir = None
+            
+            logger.info("[POSTING THREAD] Setting up Chrome driver for posting...")
+            
             # Set environment for Chrome stability
             os.environ['CHROME_LOG_FILE'] = 'nul'
             
@@ -642,21 +671,37 @@ class FacebookAICommentBot:
             # Suppress Chrome log noise
             chrome_options.add_argument("--log-level=3")  # Only fatal errors
             chrome_options.add_argument("--silent")
-            # Use a separate profile directory for the posting browser
-            # This avoids conflicts with the main browser
-            user_data_dir = os.path.join(os.getcwd(), "chrome_data_posting")
+            # Use a completely separate profile directory for the posting browser
+            # This avoids conflicts with the main browser which uses "chrome_data"
+            import uuid
+            unique_id = str(uuid.uuid4())[:8]  # Short unique ID
+            user_data_dir = os.path.join(os.getcwd(), f"chrome_posting_temp_{unique_id}")
             chrome_options.add_argument(f"--user-data-dir={user_data_dir}")
-            chrome_options.add_argument(f"--profile-directory=Default")
+            chrome_options.add_argument(f"--profile-directory=PostingProfile")
+            
+            # Store the temp directory for cleanup later
+            self._temp_chrome_dir = user_data_dir
+            
             service = Service(ChromeDriverManager().install())
             self.posting_driver = webdriver.Chrome(service=service, options=chrome_options)
-            logger.info("Background posting Chrome driver set up (minimized window mode).")
+            
+            # Test the driver is working
+            self.posting_driver.get("https://www.facebook.com")
+            logger.info("[POSTING THREAD] ✅ Background posting Chrome driver set up and tested successfully.")
+            return True
+            
         except Exception as e:
-            logger.error(f"Failed to setup background posting Chrome Driver: {e}")
+            logger.error(f"[POSTING THREAD] ❌ Failed to setup background posting Chrome Driver: {e}")
             self.posting_driver = None
+            return False
 
     def start_posting_thread(self):
         """Start a background thread to post comments from the queue."""
         self.posting_queue = queue.Queue()
+        
+        # Setup posting driver for image posting
+        logger.info("Setting up dedicated posting driver for image uploads...")
+        self.setup_posting_driver()
         
         # Initialize window manager after driver is setup
         # Will be initialized in the worker thread when driver is available
@@ -694,13 +739,35 @@ class FacebookAICommentBot:
         
         while True:
             try:
-                # Handle both old format (post_url, comment) and new format (post_url, comment, comment_id)
+                # Handle multiple formats: (post_url, comment), (post_url, comment, comment_id), (post_url, comment, comment_id, images)
                 queue_item = self.posting_queue.get(timeout=1)  # Non-blocking with timeout
                 
                 start_time = time.time()
                 success = False
+                images = None
                 
-                if len(queue_item) == 3:
+                if len(queue_item) == 4:
+                    # New format with images
+                    post_url, comment, comment_id, images = queue_item
+                    logger.info(f"[POSTING THREAD] Posting comment {comment_id} with {len(images) if images else 0} images to: {post_url[:50]}...")
+                    
+                    # Check if image posting is enabled and we have images
+                    if images and self.config.get('ENABLE_IMAGE_POSTING', False):
+                        logger.info(f"[POSTING THREAD] 🖼️ Image posting enabled, attaching {len(images)} images")
+                        success = self.post_comment_with_image_background(post_url, comment, comment_id, images)
+                    elif images and not self.config.get('ENABLE_IMAGE_POSTING', False):
+                        logger.warning(f"[POSTING THREAD] ⚠️ Images provided but image posting disabled, posting text only")
+                        if hasattr(self, 'posting_manager') and self.posting_manager:
+                            success = self.posting_manager.post_comment(post_url, comment, comment_id)
+                        else:
+                            success = self._post_comment_background(post_url, comment, comment_id)
+                    elif hasattr(self, 'posting_manager') and self.posting_manager:
+                        # Fallback to window manager without images (for now)
+                        success = self.posting_manager.post_comment(post_url, comment, comment_id)
+                    else:
+                        success = self._post_comment_background(post_url, comment, comment_id)
+                        
+                elif len(queue_item) == 3:
                     post_url, comment, comment_id = queue_item
                     logger.info(f"[POSTING THREAD] Posting comment {comment_id} to: {post_url[:50]}...")
                     
@@ -760,6 +827,95 @@ class FacebookAICommentBot:
             failure_rate = (self._posting_stats['failures'] / self._posting_stats['total_posts']) * 100
             logger.info(f"[PERFORMANCE] Avg posting time: {avg_time:.2f}s, Failure rate: {failure_rate:.1f}%")
 
+    def post_comment_with_image_background(self, post_url, comment, comment_id, images):
+        """Post a comment with images using the background posting driver"""
+        try:
+            # Check if posting driver is available and still valid
+            if not hasattr(self, 'posting_driver') or not self.posting_driver:
+                logger.warning("[POSTING THREAD] No posting driver available, attempting to create one...")
+                self.setup_posting_driver()
+                
+            # Validate driver is still alive
+            if self.posting_driver:
+                try:
+                    # Test if driver is responsive
+                    self.posting_driver.current_url
+                except Exception as e:
+                    logger.warning(f"[POSTING THREAD] Posting driver appears dead: {e}, recreating...")
+                    try:
+                        self.posting_driver.quit()
+                    except:
+                        pass
+                    self.setup_posting_driver()
+            
+            if not self.posting_driver:
+                logger.error("[POSTING THREAD] Failed to create posting driver")
+                return False
+            
+            logger.info(f"[POSTING THREAD] 🖼️ Navigating to post with images: {post_url[:50]}...")
+            
+            # Navigate to the post URL
+            self.posting_driver.get(post_url)
+            time.sleep(2)  # Wait for page load
+            
+            # Use multi-image strategy: comment+first image, then image-only posts
+            # Create a temporary bot instance with the posting driver for the strategy methods
+            temp_bot = FacebookAICommentBot(self.config)
+            temp_bot.driver = self.posting_driver
+            temp_bot.posting_driver = self.posting_driver  # Ensure it has access to posting driver
+            
+            try:
+                # Decide strategy based on number of images
+                if not images or len(images) == 0:
+                    # No images - fall back to text-only comment
+                    logger.info("[POSTING THREAD] No images provided, posting text-only comment")
+                    success = temp_bot.post_comment(comment, 0)
+                elif len(images) == 1:
+                    # Single image - use existing method
+                    logger.info("[POSTING THREAD] Single image detected, using standard method")
+                    success = temp_bot.post_comment_with_image(comment, 0, images)
+                else:
+                    # Multiple images - use new multi-image strategy
+                    logger.info(f"[POSTING THREAD] Multiple images detected ({len(images)}), using multi-image strategy")
+                    success, results = temp_bot.post_multiple_images_strategy(post_url, comment, comment_id, images)
+                    
+                    # Log detailed results
+                    for post_type, post_success, image_path in results:
+                        status = "✅ SUCCESS" if post_success else "❌ FAILED"
+                        image_name = image_path.split('/')[-1] if image_path else "unknown"
+                        logger.info(f"[POSTING THREAD] {post_type}: {status} - {image_name}")
+                
+                # Update comment status if we have comment_id
+                if comment_id:
+                    try:
+                        from database import db
+                        queue_id = int(comment_id)
+                        if success:
+                            db.update_comment_status(queue_id, "posted")
+                            logger.info(f"[POSTING THREAD] ✅ Comment {comment_id} marked as posted")
+                        else:
+                            db.update_comment_status(queue_id, "failed")
+                            logger.warning(f"[POSTING THREAD] ❌ Comment {comment_id} marked as failed")
+                    except Exception as e:
+                        logger.error(f"Failed to update comment status: {e}")
+                
+                return success
+                
+            except Exception as e:
+                logger.error(f"[POSTING THREAD] Failed to post comment with images: {e}")
+                if comment_id:
+                    try:
+                        from database import db
+                        queue_id = int(comment_id)
+                        db.update_comment_status(queue_id, "failed")
+                    except Exception as e:
+                        logger.error(f"Failed to update comment status: {e}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"[POSTING THREAD] Error in post_comment_with_image_background: {e}")
+            return False
+    
     def _post_comment_background(self, post_url, comment, comment_id=None):
         """Navigate to post_url in the posting driver and post the comment. Use explicit waits and retry logic for robustness."""
         from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
@@ -792,7 +948,7 @@ class FacebookAICommentBot:
             # Wait for comment box to be present
             comment_area = None
             try:
-                comment_area = WebDriverWait(driver, 10).until(lambda d: find_comment_box())
+                comment_area = WebDriverWait(driver, 5).until(lambda d: find_comment_box())
             except TimeoutException:
                 logger.error(f"[POSTING THREAD] Could not find comment box for: {post_url}")
                 # Update database status on failure
@@ -1379,7 +1535,7 @@ class FacebookAICommentBot:
             
             # Navigate to the post
             self.driver.get(post_url)
-            time.sleep(3)  # Wait for page to load
+            time.sleep(1.5)  # Wait for page to load
             
             # Check for Facebook error pages
             error_indicators = [
@@ -1920,55 +2076,41 @@ class FacebookAICommentBot:
         """
         logger.info("Attempting to extract post text with quality validation...")
         
-        # Wait for page to fully load
+        # Quick page load wait
         try:
-            logger.info("Waiting for page to load...")
-            time.sleep(3)  # Wait for dynamic content to load
+            logger.debug("Waiting for page to load...")
+            time.sleep(0.5)  # Reduced wait time
             
-            # Wait for article element to be present
-            WebDriverWait(self.driver, 10).until(
+            # Quick wait for article element
+            WebDriverWait(self.driver, 3).until(
                 EC.presence_of_element_located((By.XPATH, "//div[@role='article']"))
             )
-            logger.info("Page loaded successfully")
+            logger.debug("Page loaded successfully")
         except Exception as e:
-            logger.warning(f"Page load wait failed: {e}")
+            logger.debug(f"Page load wait failed: {e}")
         
-        # First, debug the page structure
-        self.debug_post_structure()
+        # Debug post structure only in debug mode
+        # self.debug_post_structure()  # Commented out for performance
         
-        # Use parent container + JavaScript extraction approach to avoid character-level spans
+        # Simplified extraction methods - try most effective first
         extraction_methods = [
-            # Method 1: Target parent containers with JavaScript extraction
+            # Method 1: Most effective Facebook selectors first
             ("//div[@data-testid='post_message']", "Facebook post message container"),
-            ("//div[@data-ad-preview='message']", "Facebook ad preview container"), 
             ("//div[contains(@class, 'userContent')]", "Facebook user content container"),
             
-            # Method 2: Article content containers (avoid comment sections)
-            ("//div[@role='article']/div[position()<=3]//div[contains(span,'') or contains(div,'')]", "Article top sections with content"),
-            ("//div[@role='article']//div[not(ancestor::*[contains(@aria-label, 'comment') or contains(@aria-label, 'Comment')])]", "Non-comment containers"),
-            
-            # Method 3: Semantic content containers
+            # Method 2: Simple article containers
             ("//div[@role='article']//div[@dir='auto']", "Article directional containers"),
-            ("//div[@role='article']//p", "Article paragraph containers"),
-            ("//div[@role='article']//*[self::div or self::p][contains(.,' ')]", "Article containers with text content"),
-            
-            # Method 4: Photo and media containers
-            ("//div[@role='article']//img[@alt]", "Image elements with alt text"),
-            ("//div[@role='article']//div[contains(@class, 'caption')]", "Photo caption containers"),
-            
-            # Method 5: Broad container fallbacks
             ("//div[@role='article']", "Main article container"),
-            ("//div[contains(@class, 'post')]", "Generic post containers"),
         ]
         
         # Try each extraction method with quality validation
         for xpath, method_name in extraction_methods:
             try:
-                logger.info(f"Trying method: {method_name}")
+                logger.debug(f"Trying method: {method_name}")
                 elements = self.driver.find_elements(By.XPATH, xpath)
                 
                 if elements:
-                    logger.info(f"Found {len(elements)} elements for {method_name}")
+                    logger.debug(f"Found {len(elements)} elements for {method_name}")
                     
                     # Handle image alt text specially using JavaScript
                     if "Image" in method_name and "alt" in method_name:
@@ -2220,6 +2362,9 @@ class FacebookAICommentBot:
 
     def post_comment(self, comment: str, comment_count: int):
         try:
+            # Sanitize comment text for ChromeDriver compatibility
+            comment = self.sanitize_unicode_for_chrome(comment)
+            
             logger.info("Waiting for comment box to appear...")
             # Wait longer for Facebook to fully load
             time.sleep(5)
@@ -2433,6 +2578,449 @@ class FacebookAICommentBot:
             logger.error(f"Failed to post comment: {e}")
             raise
 
+    def sanitize_unicode_for_chrome(self, text: str) -> str:
+        """
+        Sanitize Unicode characters that ChromeDriver can't handle (non-BMP characters).
+        Converts problematic emojis and Unicode to safe alternatives.
+        """
+        try:
+            # Replace common problematic emojis with text equivalents
+            emoji_replacements = {
+                '✨': '*',       # Sparkles
+                '💎': 'diamond', # Diamond  
+                '💍': 'ring',    # Ring
+                '👑': 'crown',   # Crown
+                '🌟': '*',       # Star
+                '⭐': '*',       # Star
+                '💫': '*',       # Dizzy star
+                '🔥': 'fire',    # Fire
+                '❤️': 'love',    # Heart
+                '💖': 'love',    # Sparkling heart
+                '😍': ':)',      # Heart eyes
+                '🤩': ':)',      # Star eyes
+                '👍': 'thumbs up', # Thumbs up
+                '💯': '100',     # 100 emoji
+                '🎉': '!',       # Party
+                '🏆': 'trophy',  # Trophy
+            }
+            
+            # Apply emoji replacements
+            sanitized = text
+            for emoji, replacement in emoji_replacements.items():
+                sanitized = sanitized.replace(emoji, replacement)
+            
+            # Remove any remaining non-BMP characters (Unicode > U+FFFF)
+            # Keep only Basic Multilingual Plane characters
+            sanitized = ''.join(char for char in sanitized if ord(char) <= 0xFFFF)
+            
+            if sanitized != text:
+                logger.info(f"[UNICODE] Sanitized comment text for ChromeDriver compatibility")
+                logger.debug(f"[UNICODE] Original: {text[:50]}...")
+                logger.debug(f"[UNICODE] Sanitized: {sanitized[:50]}...")
+            
+            return sanitized
+            
+        except Exception as e:
+            logger.warning(f"[UNICODE] Error sanitizing text, using original: {e}")
+            return text
+
+    def post_comment_with_image(self, comment: str, comment_count: int, image_paths: List[str] = None):
+        """
+        Enhanced version of post_comment that supports image attachments.
+        Falls back to text-only if image upload fails.
+        """
+        try:
+            # Sanitize comment text for ChromeDriver compatibility
+            comment = self.sanitize_unicode_for_chrome(comment)
+            
+            logger.info(f"🖼️ Starting comment with {len(image_paths) if image_paths else 0} images")
+            
+            # First, activate the comment box using existing logic
+            logger.info("Waiting for comment box to appear...")
+            time.sleep(5)
+            
+            # Find comment box using existing selectors
+            elements = self.driver.find_elements(By.XPATH, self.config['COMMENT_BOX_XPATH'])
+            logger.info(f"Found {len(elements)} elements matching the primary comment box XPath.")
+            
+            if len(elements) == 0:
+                # Try fallback selectors
+                logger.info("Primary selector failed, trying fallback selectors...")
+                for i, fallback_xpath in enumerate(self.config.get('COMMENT_BOX_FALLBACK_XPATHS', [])):
+                    try:
+                        elements = self.driver.find_elements(By.XPATH, fallback_xpath)
+                        if len(elements) > 0:
+                            logger.info(f"Found {len(elements)} elements with fallback selector {i+1}")
+                            break
+                    except Exception as e:
+                        logger.warning(f"Fallback selector {i+1} failed: {e}")
+                        continue
+            
+            if len(elements) == 0:
+                logger.error("No comment box found")
+                raise TimeoutException("No comment box found.")
+                
+            comment_area = elements[0]
+            
+            # Click to activate the comment box
+            logger.info("Activating comment box...")
+            comment_area.click()
+            time.sleep(random.uniform(1, 2))
+            
+            # NEW: Attach images if provided
+            if image_paths and len(image_paths) > 0:
+                success = self._attach_images_to_comment(image_paths)
+                if success:
+                    logger.info("✅ Images attached successfully")
+                    # Wait for upload to complete
+                    time.sleep(3)
+                    
+                    # IMPORTANT: Re-find comment box as DOM may have changed
+                    logger.info("Re-finding comment box after image upload...")
+                    elements = self.driver.find_elements(By.XPATH, self.config['COMMENT_BOX_XPATH'])
+                    if len(elements) == 0:
+                        # Try fallbacks again
+                        for fallback_xpath in self.config.get('COMMENT_BOX_FALLBACK_XPATHS', []):
+                            elements = self.driver.find_elements(By.XPATH, fallback_xpath)
+                            if len(elements) > 0:
+                                break
+                    
+                    if len(elements) > 0:
+                        comment_area = elements[0]
+                        # Click to ensure focus is back on text area
+                        comment_area.click()
+                        time.sleep(0.5)
+                else:
+                    logger.warning("⚠️ Image attachment failed, continuing with text only")
+            
+            # Type the comment text using existing human-like typing logic
+            logger.info("⌨️ Typing comment text...")
+            
+            # Enhanced human-like typing with natural patterns
+            comment_with_errors = self.simulate_human_typing_errors(comment)
+            comment_chunks = self._split_comment_naturally(comment_with_errors)
+            
+            for chunk_index, chunk in enumerate(comment_chunks):
+                for char_index, char in enumerate(chunk):
+                    comment_area.send_keys(char)
+                    
+                    # Natural typing delays
+                    if char in ['.', '!', '?']:
+                        time.sleep(random.uniform(0.3, 0.8))
+                    elif char in [',', ';', ':']:
+                        time.sleep(random.uniform(0.1, 0.4))
+                    elif char == ' ':
+                        time.sleep(random.uniform(0.05, 0.2))
+                    elif random.random() < 0.15:
+                        time.sleep(random.uniform(0.05, 0.25))
+            
+            # Pause before posting
+            logger.info("⏳ Natural pause before posting...")
+            time.sleep(random.uniform(2.0, 4.0))
+            
+            # Submit the comment
+            try:
+                comment_area.send_keys(Keys.RETURN)
+                logger.info(f"✅ Posted comment {comment_count + 1} with {len(image_paths) if image_paths else 0} images")
+            except Exception as key_error:
+                logger.warning(f"Enter key failed: {key_error}, trying Post button...")
+                # Try clicking Post button as fallback
+                self._click_post_button()
+            
+            # Wait for post to process
+            time.sleep(random.uniform(2, 4))
+            
+            # Return success
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to post comment with images: {e}")
+            # If image posting failed completely, try regular text-only posting
+            if image_paths and len(image_paths) > 0:
+                logger.info("Falling back to text-only comment...")
+                try:
+                    self.post_comment(comment, comment_count)
+                    return True  # Fallback succeeded
+                except Exception as fallback_error:
+                    logger.error(f"Fallback text-only comment also failed: {fallback_error}")
+                    return False
+            else:
+                return False
+    
+    def _attach_images_to_comment(self, image_paths: List[str]) -> bool:
+        """
+        Attach images to the current comment being composed.
+        Returns True if successful, False otherwise.
+        """
+        try:
+            logger.info(f"🎯 Attempting to attach {len(image_paths)} images")
+            
+            # Look for file input element - it may be hidden
+            # Facebook typically has input[type='file'] for image uploads
+            file_input_selectors = [
+                "//input[@type='file' and contains(@accept, 'image')]",
+                "//input[@type='file'][@multiple]",
+                "//div[@aria-label='Attach a photo or video']//input[@type='file']",
+                "//form//input[@type='file']",
+                "//div[contains(@class, 'comment')]//input[@type='file']"
+            ]
+            
+            file_input = None
+            for selector in file_input_selectors:
+                try:
+                    elements = self.driver.find_elements(By.XPATH, selector)
+                    if elements:
+                        file_input = elements[0]
+                        logger.info(f"Found file input with selector: {selector}")
+                        break
+                except Exception as e:
+                    logger.debug(f"Selector {selector} failed: {e}")
+                    continue
+            
+            if not file_input:
+                # Try to trigger the file input to appear by clicking photo icon
+                logger.info("File input not found, trying to click photo attachment button...")
+                
+                photo_button_selectors = [
+                    "//div[@aria-label='Attach a photo or video']",
+                    "//div[@aria-label='Photo/Video']",
+                    "//button[@aria-label='Attach a photo or video']",
+                    "//div[contains(@aria-label, 'photo')]",
+                    "//i[contains(@style, 'background-image')]//parent::div[@role='button']"
+                ]
+                
+                for selector in photo_button_selectors:
+                    try:
+                        photo_button = self.driver.find_element(By.XPATH, selector)
+                        photo_button.click()
+                        logger.info(f"Clicked photo button: {selector}")
+                        time.sleep(1)
+                        
+                        # Now try to find file input again
+                        for file_selector in file_input_selectors:
+                            elements = self.driver.find_elements(By.XPATH, file_selector)
+                            if elements:
+                                file_input = elements[0]
+                                logger.info(f"Found file input after clicking button")
+                                break
+                        
+                        if file_input:
+                            break
+                            
+                    except Exception as e:
+                        logger.debug(f"Photo button selector {selector} failed: {e}")
+                        continue
+            
+            if not file_input:
+                logger.error("Could not find file input element for image upload")
+                return False
+            
+            # Prepare full file paths
+            import os
+            full_paths = []
+            for path in image_paths:
+                if os.path.isabs(path):
+                    full_path = path
+                else:
+                    # Assume images are in uploads directory
+                    full_path = os.path.join(os.getcwd(), path)
+                
+                if os.path.exists(full_path):
+                    full_paths.append(full_path)
+                    logger.info(f"✅ Found image file: {full_path}")
+                else:
+                    logger.warning(f"⚠️ Image file not found: {full_path}")
+            
+            if not full_paths:
+                logger.error("No valid image files found")
+                return False
+            
+            # Send file paths to the input element
+            # For multiple files, join with \n
+            file_paths_string = "\n".join(full_paths)
+            
+            logger.info(f"Sending file paths to input element...")
+            file_input.send_keys(file_paths_string)
+            
+            # Wait for upload to process
+            logger.info("Waiting for images to upload...")
+            time.sleep(3)
+            
+            # Verify upload by checking for image preview elements
+            preview_selectors = [
+                "//div[contains(@class, 'preview')]//img",
+                "//div[@role='presentation']//img",
+                "//div[contains(@aria-label, 'Remove photo')]",
+                "//div[contains(@class, 'x1n2onr6')]//img"
+            ]
+            
+            preview_found = False
+            for selector in preview_selectors:
+                previews = self.driver.find_elements(By.XPATH, selector)
+                if previews:
+                    logger.info(f"✅ Found {len(previews)} image preview(s)")
+                    preview_found = True
+                    break
+            
+            if not preview_found:
+                logger.warning("Could not verify image upload via preview")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error attaching images: {e}")
+            return False
+
+    def post_image_only(self, post_url, image_path):
+        """
+        Post a single image as a comment without any text.
+        Used for follow-up images after the main comment+image post.
+        """
+        try:
+            logger.info(f"[IMAGE-ONLY] Posting image-only comment: {image_path.split('/')[-1]}")
+            
+            # Ensure we're on the right post
+            current_url = self.posting_driver.current_url
+            if post_url not in current_url:
+                logger.info(f"[IMAGE-ONLY] Navigating to post: {post_url[:50]}...")
+                self.posting_driver.get(post_url)
+                time.sleep(3)  # Wait for page load
+            
+            # Find comment box using existing selectors from post_comment
+            logger.info("[IMAGE-ONLY] Looking for comment box...")
+            elements = self.posting_driver.find_elements(By.XPATH, self.config['COMMENT_BOX_XPATH'])
+            
+            if len(elements) == 0:
+                # Try fallback selectors
+                logger.info("[IMAGE-ONLY] Primary selector failed, trying fallback selectors...")
+                for i, fallback_xpath in enumerate(self.config.get('COMMENT_BOX_FALLBACK_XPATHS', [])):
+                    try:
+                        elements = self.posting_driver.find_elements(By.XPATH, fallback_xpath)
+                        if len(elements) > 0:
+                            logger.info(f"[IMAGE-ONLY] Found comment box with fallback selector {i+1}")
+                            break
+                    except Exception as e:
+                        logger.debug(f"[IMAGE-ONLY] Fallback selector {i+1} failed: {e}")
+                        continue
+            
+            if len(elements) == 0:
+                logger.error("[IMAGE-ONLY] Could not find comment box")
+                return False
+                
+            comment_area = elements[0]
+            
+            # Click to activate the comment box
+            logger.info("[IMAGE-ONLY] Activating comment box...")
+            comment_area.click()
+            time.sleep(2)
+            
+            # Attach the image using existing image attachment logic
+            success = self._attach_images_to_comment([image_path])
+            if not success:
+                logger.error("[IMAGE-ONLY] Failed to attach image")
+                return False
+            
+            logger.info("[IMAGE-ONLY] Image attached, waiting for upload to complete...")
+            time.sleep(3)  # Wait for upload to complete
+            
+            # Submit the comment (image-only, no text)
+            logger.info("[IMAGE-ONLY] Submitting image-only comment...")
+            comment_area.send_keys(Keys.RETURN)
+            
+            # Wait for post to process
+            time.sleep(2)
+            
+            logger.info("[IMAGE-ONLY] ✅ Image-only comment posted successfully")
+            return True
+            
+        except Exception as e:
+            logger.error(f"[IMAGE-ONLY] Failed to post image-only comment: {e}")
+            return False
+
+    def post_multiple_images_strategy(self, post_url, comment, comment_id, images):
+        """
+        Post multiple images using the strategy:
+        1. First post: comment text + first image
+        2. Subsequent posts: image-only (no text)
+        
+        Returns: (overall_success, results_list)
+        """
+        try:
+            if not images or len(images) == 0:
+                logger.warning("[MULTI-IMAGE] No images provided")
+                return False, []
+            
+            logger.info(f"[MULTI-IMAGE] Starting multi-image strategy: 1 comment + {len(images)-1} image-only posts")
+            results = []
+            
+            # Step 1: Post first comment with first image
+            logger.info(f"[MULTI-IMAGE] Step 1/1: Posting comment with first image")
+            first_image_success = self.post_comment_with_image(comment, 0, [images[0]])
+            results.append(('comment_with_image', first_image_success, images[0]))
+            
+            if not first_image_success:
+                logger.error("[MULTI-IMAGE] First comment+image failed, aborting remaining images")
+                return False, results
+            
+            # Step 2: Post remaining images as image-only posts
+            if len(images) > 1:
+                logger.info(f"[MULTI-IMAGE] Posting {len(images)-1} additional image-only posts")
+                
+                for i, image_path in enumerate(images[1:], 2):
+                    logger.info(f"[MULTI-IMAGE] Step {i}/{len(images)}: Posting image-only")
+                    
+                    # Small delay between posts to avoid rate limiting
+                    time.sleep(2)
+                    
+                    image_success = self.post_image_only(post_url, image_path)
+                    results.append(('image_only', image_success, image_path))
+                    
+                    if image_success:
+                        logger.info(f"[MULTI-IMAGE] ✅ Image-only {i-1}/{len(images)-1} posted successfully")
+                    else:
+                        logger.warning(f"[MULTI-IMAGE] ❌ Image-only {i-1}/{len(images)-1} failed, continuing with remaining images")
+            
+            # Calculate overall success
+            successful_posts = sum(1 for _, success, _ in results if success)
+            total_posts = len(results)
+            overall_success = successful_posts > 0  # Success if at least one post worked
+            
+            logger.info(f"[MULTI-IMAGE] Strategy complete: {successful_posts}/{total_posts} posts successful")
+            return overall_success, results
+            
+        except Exception as e:
+            logger.error(f"[MULTI-IMAGE] Error in multi-image strategy: {e}")
+            return False, results if 'results' in locals() else []
+    
+    def _click_post_button(self):
+        """Helper method to click the Post button"""
+        try:
+            post_button_selectors = [
+                "//div[@aria-label='Post' and @role='button']",
+                "//div[@aria-label='Comment' and @role='button']",
+                "//button[contains(@aria-label, 'Post')]",
+                "//button[contains(@aria-label, 'Comment')]"
+            ]
+            
+            for selector in post_button_selectors:
+                try:
+                    wait = WebDriverWait(self.driver, 3)
+                    post_button = wait.until(
+                        EC.element_to_be_clickable((By.XPATH, selector))
+                    )
+                    self.driver.execute_script("arguments[0].click();", post_button)
+                    logger.info(f"✅ Clicked Post button")
+                    return True
+                except:
+                    continue
+            
+            logger.warning("Could not find Post button")
+            return False
+            
+        except Exception as e:
+            logger.error(f"Error clicking post button: {e}")
+            return False
+
     def _split_comment_naturally(self, comment: str) -> List[str]:
         """Split comment into natural chunks for more human-like typing"""
         # Split by sentences first
@@ -2469,340 +3057,6 @@ class FacebookAICommentBot:
             reconstructed = [comment]
         
         return reconstructed
-
-    def extract_first_image_url(self):
-        """
-        Extract the first image URL from the current post, specifically avoiding comment section emojis/stickers.
-        Returns the image URL or an empty string.
-        """
-        try:
-            logger.critical("!!! IMAGE EXTRACTION TEST LOG !!! extract_first_image_url CALLED !!!")
-            logger.info("[Image Extraction] Called extract_first_image_url.")
-            
-            # Wait for images to load
-            self.wait_for_images_to_load()
-            
-            # STRATEGY 1: Target only the main post content, excluding comments
-            post_content_selectors = [
-                # Facebook CDN patterns (try multiple CDN domains)
-                "//div[@role='article']//img[@src and (contains(@src, 'scontent') or contains(@src, 'fbcdn'))]",
-                "//div[@role='article']//div[contains(@data-pagelet, 'FeedUnit')]//img[@src and (contains(@src, 'scontent') or contains(@src, 'fbcdn'))]",
-                "//div[@role='article']//div[contains(@class, 'x1yztbdb')]//img[@src and (contains(@src, 'scontent') or contains(@src, 'fbcdn'))]",
-                
-                # General post content images (not limited to CDN)
-                "//div[@role='article']//div[contains(@class, 'x1n2onr6')]//img[@src]",
-                "//div[contains(@class, 'x1ey2m1c') and not(ancestor::*[contains(@aria-label, 'comment') or contains(@aria-label, 'Comment')])]//img[@src]",
-                "//div[contains(@class, 'scaledImageFitWidth')]//img[@src]",
-                "//div[contains(@data-testid, 'photo')]//img[@src]",
-                
-                # Broader search excluding comments
-                "//div[@role='article']//img[@src and not(ancestor::*[contains(@aria-label, 'comment') or contains(@aria-label, 'Comment') or contains(@class, 'comment')])]",
-            ]
-            
-            all_images = []
-            
-            for idx, selector in enumerate(post_content_selectors):
-                try:
-                    img_elements = self.driver.find_elements(By.XPATH, selector)
-                    logger.info(f"[Image Extraction] Post-content selector {idx+1}: Found {len(img_elements)} images")
-                    
-                    if img_elements:
-                        all_images.extend(img_elements)
-                        # If Facebook CDN selector finds images, prioritize those
-                        if idx < 3 and img_elements:  # First 3 are FB CDN selectors
-                            logger.info("[Image Extraction] Using Facebook CDN post-content images (priority)")
-                            break
-                            
-                except Exception as e:
-                    logger.warning(f"[Image Extraction] Post-content selector {idx+1} failed: {e}")
-                    continue
-            
-            # STRATEGY 2: If no images found, use position-based approach
-            if not all_images:
-                logger.info("[Image Extraction] No images found in post content, trying position-based approach...")
-                
-                position_selectors = [
-                    # Get first few images in article, likely to be post content
-                    "(//div[@role='article']//img[@src])[1]",
-                    "(//div[@role='article']//img[@src])[2]",
-                    "(//div[@role='article']//img[@src])[3]",
-                ]
-                
-                for selector in position_selectors:
-                    try:
-                        img_elements = self.driver.find_elements(By.XPATH, selector)
-                        if img_elements:
-                            all_images.extend(img_elements)
-                    except Exception as e:
-                        logger.warning(f"[Image Extraction] Position selector failed: {e}")
-                        continue
-            
-            logger.info(f"[Image Extraction] Total found {len(all_images)} <img> elements.")
-            
-            # Enhanced filtering specifically for emoji/sticker prevention
-            processed_urls = set()
-            valid_images = []
-            
-            for idx, img in enumerate(all_images):
-                try:
-                    src = img.get_attribute('src') or img.get_attribute('data-src') or img.get_attribute('data-lazy-src')
-                    alt = img.get_attribute('alt') or ""
-                    
-                    # Get image dimensions and other attributes
-                    width = img.get_attribute('width')
-                    height = img.get_attribute('height')
-                    class_name = img.get_attribute('class') or ""
-                    
-                    logger.info(f"[Image Extraction] img[{idx}] src: {src}")
-                    logger.info(f"[Image Extraction] img[{idx}] alt: {alt}")
-                    logger.info(f"[Image Extraction] img[{idx}] dimensions: {width}x{height}")
-                    logger.info(f"[Image Extraction] img[{idx}] class: {class_name}")
-                    
-                    # Skip if no src or already processed
-                    if not src or src in processed_urls:
-                        continue
-                        
-                    processed_urls.add(src)
-                    
-                    # ENHANCED FILTERING FOR EMOJIS/STICKERS/REACTIONS
-                    emoji_sticker_patterns = [
-                        # Direct emoji/reaction indicators
-                        'emoji', 'sticker', 'reaction', 'like', 'love', 'angry', 'sad', 'wow', 'haha', 'care',
-                        'thumbs', 'heart', 'face', 'smile', 'cry', 'laugh',
-                        
-                        # Facebook specific reaction patterns
-                        'reactions', 'feelings', 'activity',
-                        
-                        # UI elements
-                        'profile', 'avatar', 'static', 'icon', 'badge', 'button', 'logo', 'ads', 'sponsored',
-                        'menu', 'dropdown', 'tooltip', 'overlay',
-                        
-                        # Comment section indicators
-                        'comment', 'reply', 'thread'
-                    ]
-                    
-                    should_skip = False
-                    skip_reason = ""
-                    
-                    # Check URL patterns
-                    for pattern in emoji_sticker_patterns:
-                        if pattern.lower() in src.lower():
-                            should_skip = True
-                            skip_reason = f"URL contains '{pattern}'"
-                            break
-                    
-                    # Check alt text for emoji indicators
-                    if not should_skip and alt:
-                        alt_lower = alt.lower()
-                        for pattern in emoji_sticker_patterns:
-                            if pattern in alt_lower:
-                                should_skip = True
-                                skip_reason = f"Alt text contains '{pattern}'"
-                                break
-                    
-                    # Check class names for emoji indicators
-                    if not should_skip and class_name:
-                        class_lower = class_name.lower()
-                        for pattern in ['emoji', 'reaction', 'sticker', 'icon']:
-                            if pattern in class_lower:
-                                should_skip = True
-                                skip_reason = f"Class contains '{pattern}'"
-                                break
-                    
-                    # Size filtering (emojis are typically small) - BUT be less aggressive
-                    if not should_skip and width and height:
-                        try:
-                            w, h = int(width), int(height)
-                            # Only skip VERY small images (likely emojis/icons)
-                            if w <= 16 or h <= 16:
-                                should_skip = True
-                                skip_reason = f"Very small ({w}x{h}) - likely emoji/icon"
-                            # Only skip tiny perfect squares (clear emojis)
-                            elif w == h and w <= 32:
-                                should_skip = True
-                                skip_reason = f"Tiny square ({w}x{h}) - likely emoji"
-                        except ValueError:
-                            pass
-                    
-                    # File format filtering
-                    if not should_skip:
-                        if (src.endswith(('.svg', '.gif', '.ico')) or 
-                            src.startswith(('data:', 'blob:')) or
-                            len(src) < 30):  # Very short URLs often point to icons
-                            should_skip = True
-                            skip_reason = "Invalid format or too short"
-                    
-                    if should_skip:
-                        logger.info(f"[Image Extraction] Skipping img[{idx}]: {skip_reason}")
-                        continue
-                    
-                    # POSITION-BASED FILTERING: Check if image is likely in comment section
-                    try:
-                        # Get the image's position in the DOM relative to comment indicators
-                        parent_element = img.find_element(By.XPATH, "./ancestor::*[contains(@aria-label, 'comment') or contains(@aria-label, 'Comment') or contains(@class, 'comment')][1]")
-                        if parent_element:
-                            should_skip = True
-                            skip_reason = "Found in comment section"
-                            logger.info(f"[Image Extraction] Skipping img[{idx}]: {skip_reason}")
-                            continue
-                    except:
-                        # No comment parent found - this is good
-                        pass
-                    
-                    # Score the image for quality (prioritize actual post images)
-                    score = 0
-                    
-                    # Prefer Facebook CDN images
-                    if 'scontent' in src:
-                        score += 20
-                        logger.info(f"[Image Extraction] +20 points: Facebook CDN")
-                    
-                    # Prefer larger images
-                    if width and height:
-                        try:
-                            w, h = int(width), int(height)
-                            if w > 400 and h > 300:
-                                score += 15
-                                logger.info(f"[Image Extraction] +15 points: large size ({w}x{h})")
-                            elif w > 200 and h > 150:
-                                score += 10
-                                logger.info(f"[Image Extraction] +10 points: medium size ({w}x{h})")
-                            elif w > 100 and h > 100:
-                                score += 5
-                                logger.info(f"[Image Extraction] +5 points: decent size ({w}x{h})")
-                        except:
-                            pass
-                    
-                    # Prefer images with meaningful alt text (but not emoji descriptions)
-                    if alt and len(alt.strip()) > 10 and not any(word in alt.lower() for word in ['emoji', 'sticker', 'reaction']):
-                        score += 8
-                        logger.info(f"[Image Extraction] +8 points: meaningful alt text")
-                    
-                    # Prefer HTTPS URLs
-                    if src.startswith('https://'):
-                        score += 2
-                    
-                    # Bonus for being early in the DOM (likely post content, not comments)
-                    if idx < 3:
-                        score += 5
-                        logger.info(f"[Image Extraction] +5 points: early in DOM (position {idx})")
-                    
-                    valid_images.append({
-                        'url': src,
-                        'score': score,
-                        'alt': alt,
-                        'index': idx,
-                        'dimensions': f"{width}x{height}" if width and height else "unknown"
-                    })
-                    
-                    logger.info(f"[Image Extraction] Valid post image (score: {score}): {src}")
-                    
-                except Exception as e:
-                    logger.warning(f"[Image Extraction] Error processing img[{idx}]: {e}")
-                    continue
-        
-            if valid_images:
-                # Sort by score (highest first), then by index (first found)
-                valid_images.sort(key=lambda x: (-x['score'], x['index']))
-                best_image = valid_images[0]
-                logger.info(f"[Image Extraction] ✅ Returning best image (score: {best_image['score']}, dimensions: {best_image['dimensions']}): {best_image['url']}")
-                return best_image['url']
-            
-            # FALLBACK: If no valid images found, try a more permissive approach
-            logger.info("[Image Extraction] No valid images found, trying fallback approach...")
-            try:
-                # Get ANY image in the article that's not clearly an emoji
-                fallback_images = self.driver.find_elements(By.XPATH, "//div[@role='article']//img[@src]")
-                for idx, img in enumerate(fallback_images):
-                    try:
-                        src = img.get_attribute('src')
-                        alt = img.get_attribute('alt') or ""
-                        
-                        # Very basic filtering - only skip obvious emojis
-                        if (src and 
-                            'emoji' not in src.lower() and 
-                            'static.xx.fbcdn.net/images/emoji' not in src and
-                            len(src) > 50):  # Reasonably long URL
-                            
-                            logger.info(f"[Image Extraction] ✅ FALLBACK: Using image {idx}: {src}")
-                            return src
-                            
-                    except Exception as e:
-                        continue
-                        
-            except Exception as e:
-                logger.warning(f"[Image Extraction] Fallback approach failed: {e}")
-                
-            logger.info("[Image Extraction] ⚠️ No suitable post image found, returning empty string.")
-            return ""
-            
-        except Exception as e:
-            logger.error(f"[Image Extraction] ❌ Exception: {e}")
-            return ""
-
-    def wait_for_images_to_load(self):
-        """
-        Enhanced waiting strategy to ensure images are loaded, with focus on post content.
-        """
-        try:
-            logger.info("[Image Loading] Waiting for post images to load...")
-            
-            # Scroll to trigger lazy loading, but not too far (to avoid comment section)
-            self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight * 0.3);")
-            time.sleep(1)
-            self.driver.execute_script("window.scrollTo(0, 0);")
-            time.sleep(1)
-            
-            # Wait for main post images to appear
-            try:
-                WebDriverWait(self.driver, 10).until(
-                    lambda driver: len(driver.find_elements(By.XPATH, "//div[@role='article']//img[@src and contains(@src, 'scontent')]")) > 0
-                )
-                logger.info("[Image Loading] Facebook CDN images detected")
-            except TimeoutException:
-                logger.warning("[Image Loading] No Facebook CDN images found, checking for any images...")
-                try:
-                    WebDriverWait(self.driver, 5).until(
-                        lambda driver: len(driver.find_elements(By.XPATH, "//div[@role='article']//img[@src]")) > 0
-                    )
-                    logger.info("[Image Loading] Some images detected")
-                except TimeoutException:
-                    logger.warning("[Image Loading] No images found on page")
-            
-            # Additional wait for image attributes to fully populate
-            time.sleep(3)
-            
-            # Log what we found for debugging
-            fb_cdn_images = self.driver.find_elements(By.XPATH, "//div[@role='article']//img[@src and contains(@src, 'scontent')]")
-            all_images = self.driver.find_elements(By.XPATH, "//div[@role='article']//img[@src]")
-            logger.info(f"[Image Loading] Found {len(fb_cdn_images)} Facebook CDN images, {len(all_images)} total images")
-            
-        except Exception as e:
-            logger.error(f"[Image Loading] Error: {e}")
-
-    # Additional helper method to validate the extracted image
-    def validate_extracted_image(self, image_url):
-        """
-        Quick validation to ensure the extracted image is likely a real post image.
-        """
-        if not image_url:
-            return False, "No URL provided"
-        
-        # Check URL patterns that suggest it's NOT a post image
-        bad_patterns = ['emoji', 'sticker', 'reaction', 'profile', 'avatar', 'static', 'icon']
-        for pattern in bad_patterns:
-            if pattern.lower() in image_url.lower():
-                return False, f"URL contains suspicious pattern: {pattern}"
-        
-        # Check if it's a Facebook CDN image (good sign)
-        if 'scontent' in image_url:
-            return True, "Facebook CDN image"
-        
-        # Check URL length (very short URLs often point to icons)
-        if len(image_url) < 50:
-            return False, "URL too short"
-        
-        return True, "Passed basic validation"
     
     def get_live_screenshot(self):
         """
@@ -2931,7 +3185,7 @@ class FacebookAICommentBot:
         return checks_passed
     
     def run(self):
-        logger.critical("!!! TEST LOG: FacebookAICommentBot.run() STARTED !!!")
+        logger.info("FacebookAICommentBot starting...")
         try:
             self.setup_driver()
             
@@ -2955,7 +3209,7 @@ class FacebookAICommentBot:
                     # Navigate back to the group feed to get fresh content
                     logger.info("Refreshing group feed to check for new posts...")
                     self.driver.get(url)
-                    time.sleep(5)  # Wait for page to load
+                    time.sleep(2)  # Wait for page to load
                     
                     all_post_links = self.scroll_and_collect_post_links()
                     logger.info(f"Collected {len(all_post_links)} post links from feed.")
@@ -2963,10 +3217,10 @@ class FacebookAICommentBot:
                     
                     for post_url in all_post_links:
                         if db.is_post_processed(post_url):
-                            logger.info(f"Skipping already processed post: {post_url}")
+                            logger.debug(f"Skipping already processed post: {post_url}")
                             continue
                             
-                        logger.info(f"Navigating to post: {post_url}")
+                        logger.info(f"🔍 Processing post: {post_url}")
                         retry_count = 0
                         
                         while retry_count < 3:
@@ -2978,19 +3232,19 @@ class FacebookAICommentBot:
                                 if '/photo/' in post_url and 'fbid=' in post_url:
                                     # Photo URLs need their parameters to work properly
                                     navigation_url = post_url
-                                    logger.info(f"Using photo URL with parameters: {navigation_url}")
+                                    logger.debug(f"Using photo URL with parameters: {navigation_url}")
                                 else:
                                     # For other URLs, remove query parameters for navigation but keep original for storage
                                     navigation_url = post_url.split('?')[0] if '?' in post_url else post_url
-                                    logger.info(f"Navigation URL: {navigation_url}, Original: {original_post_url}")
+                                    logger.debug(f"Navigation URL: {navigation_url}, Original: {original_post_url}")
                                 
                                 self.driver.get(navigation_url)
-                                logger.critical(f"!!! TEST LOG: Navigated to: {navigation_url}")
-                                logger.critical(f"!!! TEST LOG: Will store as: {original_post_url}")
+                                logger.debug(f"Navigated to: {navigation_url}")
+                                logger.debug(f"Will store as: {original_post_url}")
                                 
                                 # Verify we're on the right page after navigation
                                 actual_url = self.driver.current_url
-                                logger.info(f"Actual page after navigation: {actual_url[:100]}...")
+                                logger.debug(f"Actual page after navigation: {actual_url[:100]}...")
                                 
                                 # Validate URL consistency for debugging
                                 if '/photo/' in original_post_url and '/photo/' not in actual_url:
@@ -3003,13 +3257,13 @@ class FacebookAICommentBot:
                                     logger.warning(f"Original: {original_post_url}")
                                     logger.warning(f"Actual: {actual_url}")
                                 
-                                # Enhanced wait time for Facebook's dynamic loading
-                                time.sleep(4)  # Reduced from 8 to 4 seconds for faster processing
+                                # Quick wait for Facebook's dynamic loading
+                                time.sleep(0.5)  # Further reduced for faster processing
                                 
                                 # Image extraction will be handled by the CRM ingestion process
-                                logger.critical("DEBUG: About to get post text")
+                                logger.debug("Getting post text")
                                 post_text = self.get_post_text()
-                                logger.critical(f"DEBUG: Extracted post text: {post_text[:100] if post_text else 'None'}...")
+                                logger.debug(f"Extracted post text: {post_text[:100] if post_text else 'None'}...")
                                 
                                 # Handle posts with minimal text but images
                                 if not post_text or len(post_text.strip()) < 10:
@@ -3051,32 +3305,32 @@ class FacebookAICommentBot:
                                         continue
                                 
                                 # Extract images from the post
-                                logger.info("Extracting images from post...")
+                                logger.debug("Extracting images from post...")
                                 post_images = self.extract_first_image_url()
                                 images_list = [post_images] if post_images else []
-                                logger.info(f"Found {len(images_list)} images")
+                                logger.debug(f"Found {len(images_list)} images")
                                 
                                 # Classify the post type
-                                logger.info("Classifying post type...")
+                                logger.debug("Classifying post type...")
                                 classifier = PostClassifier(self.config)
                                 classification = classifier.classify_post(post_text)
                                 post_type = classification.category
-                                logger.info(f"Post classified as: {post_type} (confidence: {classification.confidence:.2f})")
+                                logger.debug(f"Post classified as: {post_type} (confidence: {classification.confidence:.2f})")
                                 
                                 # Generate AI comment
-                                logger.info("Generating AI comment...")
+                                logger.debug("Generating AI comment...")
                                 generator = ExternalCommentGenerator(self.config, database=db)
                                 
                                 # Try to extract author name for personalization
                                 post_author = self.get_post_author()
                                 ai_comment = generator.generate_comment(post_type, post_text, post_author)
-                                logger.info(f"Generated comment: {ai_comment[:100]}...")
+                                logger.debug(f"Generated comment: {ai_comment[:100]}...")
                                 
                                 # Convert images list to JSON for database storage
                                 images_json = json.dumps(images_list) if images_list else None
                                 
                                 # Add to comment queue for approval - use original URL
-                                logger.info("Adding to comment approval queue...")
+                                logger.debug("Adding to comment approval queue...")
                                 queue_id = db.add_to_comment_queue(
                                     post_url=original_post_url,
                                     post_text=post_text,
@@ -3088,14 +3342,14 @@ class FacebookAICommentBot:
                                 )
                                 
                                 if queue_id:
-                                    logger.info(f"Successfully added to comment queue with ID: {queue_id}")
+                                    logger.info(f"✅ Added to queue (ID: {queue_id})")
                                     new_posts += 1
                                 else:
                                     logger.error("Failed to add comment to queue")
                                 
                                 # Mark post as processed - use original URL
                                 db.save_processed_post(original_post_url, post_text, post_type, ai_comment)
-                                logger.info(f"Post processed successfully: {original_post_url}")
+                                logger.debug(f"Post processed successfully: {original_post_url}")
                                 
                                 break  # Success, exit retry loop
                                 
@@ -3109,8 +3363,8 @@ class FacebookAICommentBot:
                                     logger.error(f"Failed to process post: {original_post_url} | Error: {e}")
                                     break
                                     
-                    logger.info(f"Scan cycle complete. Processed {new_posts} new posts. Next scan in 8 seconds...")
-                    time.sleep(8)
+                    logger.info(f"Scan cycle complete. Processed {new_posts} new posts. Next scan in 3 seconds...")
+                    time.sleep(3)
                     
         except Exception as e:
             logger.critical(f"Bot execution failed: {e}")

@@ -22,10 +22,14 @@ class ImagePackCreate(BaseModel):
     name: str
     category: str
 
+class ImagePackImage(BaseModel):
+    filename: str
+    description: str
+
 class ImagePackResponse(BaseModel):
     id: str
     name: str
-    images: List[str]
+    images: List[ImagePackImage]
     is_default: bool
     created_at: str
     updated_at: str
@@ -114,10 +118,41 @@ async def get_image_packs():
         # Convert to response format
         response_packs = []
         for pack in packs:
+            # Convert string images to object format
+            converted_images = []
+            raw_images = pack.get('images', [])
+            
+            if raw_images:
+                for img_path in raw_images:
+                    if isinstance(img_path, str):
+                        filename = img_path.split('/')[-1] if '/' in img_path else img_path
+                        description = filename.replace('_', ' ').replace('.jpg', '').replace('.png', '').title()
+                        converted_images.append({
+                            "filename": img_path,
+                            "description": description
+                        })
+            
+            # HARDCODE: Override Generic Card pack
+            if pack['name'] == 'Generic Card':
+                converted_images = [
+                    {
+                        "filename": "uploads/image-packs/generic/test_ring.jpg",
+                        "description": "Test Ring Image"
+                    },
+                    {
+                        "filename": "uploads/image-packs/generic/bravo-comment-card.png", 
+                        "description": "Bravo Comment Card"
+                    },
+                    {
+                        "filename": "uploads/image-packs/generic/blue_topaz_ring.png",
+                        "description": "Blue Topaz Ring"
+                    }
+                ]
+                
             response_packs.append(ImagePackResponse(
                 id=pack['id'],
                 name=pack['name'],
-                images=pack['images'],  # Already parsed as list in database function
+                images=converted_images,
                 is_default=pack['is_default'],
                 created_at=pack['created_at'],
                 updated_at=pack['updated_at']

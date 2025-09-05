@@ -11,8 +11,22 @@ bot/chrome_data/
 bot/__pycache__/
 bot/bot_data.db
 bot/chrome_data_test
+bot/chrome_data_posting
+bot/chrome_data_browser
+bot/chrome_data_posting_only
+bot/chrome_posting_temp_420c2fc6
+bot/chrome_posting_temp_84524c7d
+bot/chrome_posting_temp_a09870f5
+bot/chrome_posting_temp_ba12e50a
+bot/chrome_posting_temp_e9d69efb
+bot/chrome_posting_temp_fd6b8e1a
 bot/testing
 bot/comments.db
+
+__pycache__
+nul
+repopulate_demo.py
+
 
 package-lock.json
 package.json

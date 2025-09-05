@@ -45,28 +45,13 @@ export function CommentCard({ comment, onApprove, onReject }: CommentCardProps) 
     const loadImagePacks = async () => {
       setLoading(true);
       try {
-        // For now, use mock data since the API has validation issues
-        const mockPacks: ImagePack[] = [
-          {
-            id: 'engagement_rings',
-            name: 'Engagement Rings',
-            images: [
-              { filename: 'solitaire_diamond.jpg', description: 'Classic solitaire diamond ring' },
-              { filename: 'vintage_halo.jpg', description: 'Vintage-inspired halo setting' },
-              { filename: 'three_stone.jpg', description: 'Three stone engagement ring' }
-            ]
-          },
-          {
-            id: 'earrings_collection', 
-            name: 'Earrings Collection',
-            images: [
-              { filename: 'diamond_studs.jpg', description: 'Classic diamond stud earrings' },
-              { filename: 'pearl_drops.jpg', description: 'Elegant pearl drop earrings' },
-              { filename: 'gold_hoops.jpg', description: 'Modern gold hoop earrings' }
-            ]
-          }
-        ];
-        setImagePacks(mockPacks);
+        const response = await fetch('http://localhost:8000/api/image-packs');
+        if (response.ok) {
+          const packs = await response.json();
+          setImagePacks(packs);
+        } else {
+          console.error('Failed to load image packs:', response.status);
+        }
       } catch (error) {
         console.error('Error loading image packs:', error);
       } finally {

@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Image Pack Manager</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            background: white;
+            border-radius: 8px;
+            padding: 24px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 8px;
+        }
+        .subtitle {
+            color: #666;
+            margin-bottom: 24px;
+        }
+        .pack-selector {
+            margin-bottom: 24px;
+        }
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: #333;
+            font-weight: 500;
+        }
+        select, input[type="file"] {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+            margin-bottom: 16px;
+        }
+        .upload-section {
+            border-top: 1px solid #eee;
+            padding-top: 24px;
+            margin-top: 24px;
+        }
+        .file-input-wrapper {
+            position: relative;
+            display: inline-block;
+            cursor: pointer;
+            width: 100%;
+        }
+        .file-input-label {
+            display: block;
+            padding: 12px;
+            background: #007bff;
+            color: white;
+            text-align: center;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+        .file-input-label:hover {
+            background: #0056b3;
+        }
+        input[type="file"] {
+            display: none;
+        }
+        .selected-file {
+            margin-top: 12px;
+            padding: 8px;
+            background: #f0f8ff;
+            border-radius: 4px;
+            display: none;
+        }
+        button {
+            background: #28a745;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            width: 100%;
+            margin-top: 16px;
+            transition: background 0.3s;
+        }
+        button:hover:not(:disabled) {
+            background: #218838;
+        }
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .message {
+            margin-top: 16px;
+            padding: 12px;
+            border-radius: 4px;
+            display: none;
+        }
+        .success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .images-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+            gap: 16px;
+            margin-top: 24px;
+        }
+        .image-item {
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            overflow: hidden;
+            background: white;
+        }
+        .image-item img {
+            width: 100%;
+            height: 150px;
+            object-fit: cover;
+        }
+        .image-item .image-name {
+            padding: 8px;
+            font-size: 12px;
+            color: #666;
+            word-break: break-all;
+        }
+        .loading {
+            text-align: center;
+            padding: 20px;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Image Pack Manager</h1>
+        <p class="subtitle">Upload images to your Facebook comment image packs</p>
+        
+        <div class="pack-selector">
+            <label for="packSelect">Select Image Pack:</label>
+            <select id="packSelect">
+                <option value="">Loading packs...</option>
+            </select>
+        </div>
+
+        <div class="upload-section">
+            <h2>Upload New Image</h2>
+            <div class="file-input-wrapper">
+                <label class="file-input-label" for="fileInput">
+                    Choose Image File
+                </label>
+                <input type="file" id="fileInput" accept="image/*">
+                <div class="selected-file" id="selectedFile"></div>
+            </div>
+            <button id="uploadBtn" disabled>Upload Image</button>
+            <div class="message" id="message"></div>
+        </div>
+
+        <div class="upload-section">
+            <h2>Current Images in Pack</h2>
+            <div id="imagesContainer" class="loading">Select a pack to view images</div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://localhost:8000';
+        let selectedFile = null;
+        let currentPackId = null;
+
+        // Load image packs on page load
+        async function loadPacks() {
+            try {
+                const response = await fetch(`${API_BASE}/api/image-packs`);
+                const packs = await response.json();
+                
+                const select = document.getElementById('packSelect');
+                select.innerHTML = '<option value="">-- Select a Pack --</option>';
+                
+                packs.forEach(pack => {
+                    const option = document.createElement('option');
+                    option.value = pack.id;
+                    option.textContent = `${pack.name} (${pack.images.length} images)`;
+                    select.appendChild(option);
+                    
+                    // Auto-select Generic Card pack
+                    if (pack.name === 'Generic Card') {
+                        option.selected = true;
+                        currentPackId = pack.id;
+                        loadPackImages(pack.id);
+                    }
+                });
+            } catch (error) {
+                console.error('Error loading packs:', error);
+                showMessage('Error loading image packs', 'error');
+            }
+        }
+
+        // Load images for selected pack
+        async function loadPackImages(packId) {
+            if (!packId) {
+                document.getElementById('imagesContainer').innerHTML = '<div class="loading">Select a pack to view images</div>';
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_BASE}/api/image-packs`);
+                const packs = await response.json();
+                const pack = packs.find(p => p.id === packId);
+                
+                const container = document.getElementById('imagesContainer');
+                
+                if (pack && pack.images && pack.images.length > 0) {
+                    const grid = document.createElement('div');
+                    grid.className = 'images-grid';
+                    
+                    pack.images.forEach(img => {
+                        const item = document.createElement('div');
+                        item.className = 'image-item';
+                        
+                        // Handle different image data structures
+                        const filename = img.filename || img;
+                        const description = img.description || filename.split('/').pop();
+                        
+                        // Try to construct the image URL
+                        let imgSrc = '';
+                        if (filename.startsWith('http')) {
+                            imgSrc = filename;
+                        } else if (filename.startsWith('uploads/')) {
+                            imgSrc = `${API_BASE}/${filename}`;
+                        } else {
+                            imgSrc = `${API_BASE}/uploads/image-packs/generic/${filename}`;
+                        }
+                        
+                        item.innerHTML = `
+                            <img src="${imgSrc}" alt="${description}" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 150 150%22><rect fill=%22%23ddd%22 width=%22150%22 height=%22150%22/><text x=%2275%22 y=%2275%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23999%22>No Image</text></svg>'">
+                            <div class="image-name">${description}</div>
+                        `;
+                        grid.appendChild(item);
+                    });
+                    
+                    container.innerHTML = '';
+                    container.appendChild(grid);
+                } else {
+                    container.innerHTML = '<div class="loading">No images in this pack yet</div>';
+                }
+            } catch (error) {
+                console.error('Error loading pack images:', error);
+                document.getElementById('imagesContainer').innerHTML = '<div class="loading">Error loading images</div>';
+            }
+        }
+
+        // Handle pack selection
+        document.getElementById('packSelect').addEventListener('change', (e) => {
+            currentPackId = e.target.value;
+            loadPackImages(currentPackId);
+            document.getElementById('uploadBtn').disabled = !currentPackId || !selectedFile;
+        });
+
+        // Handle file selection
+        document.getElementById('fileInput').addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                selectedFile = file;
+                const fileDiv = document.getElementById('selectedFile');
+                fileDiv.style.display = 'block';
+                fileDiv.textContent = `Selected: ${file.name} (${(file.size / 1024).toFixed(2)} KB)`;
+                document.getElementById('uploadBtn').disabled = !currentPackId;
+            }
+        });
+
+        // Handle upload
+        document.getElementById('uploadBtn').addEventListener('click', async () => {
+            if (!selectedFile || !currentPackId) {
+                showMessage('Please select a pack and choose a file', 'error');
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append('file', selectedFile);
+
+            const btn = document.getElementById('uploadBtn');
+            btn.disabled = true;
+            btn.textContent = 'Uploading...';
+
+            try {
+                const response = await fetch(`${API_BASE}/api/image-packs/${currentPackId}/images`, {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (response.ok) {
+                    const result = await response.json();
+                    showMessage(`Successfully uploaded ${selectedFile.name}!`, 'success');
+                    
+                    // Reset form
+                    document.getElementById('fileInput').value = '';
+                    document.getElementById('selectedFile').style.display = 'none';
+                    selectedFile = null;
+                    
+                    // Reload packs and images
+                    await loadPacks();
+                    await loadPackImages(currentPackId);
+                } else {
+                    const error = await response.text();
+                    showMessage(`Upload failed: ${error}`, 'error');
+                }
+            } catch (error) {
+                console.error('Upload error:', error);
+                showMessage('Upload failed: Network error', 'error');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Upload Image';
+            }
+        });
+
+        // Show message
+        function showMessage(text, type) {
+            const messageDiv = document.getElementById('message');
+            messageDiv.textContent = text;
+            messageDiv.className = `message ${type}`;
+            messageDiv.style.display = 'block';
+            
+            setTimeout(() => {
+                messageDiv.style.display = 'none';
+            }, 5000);
+        }
+
+        // Initialize
+        loadPacks();
+    </script>
+</body>
+</html>

@@ -3,6 +3,9 @@ CONFIG = {
     "register_url": "https://welcome.bravocreations.com",
     "image_url": "https://your-cdn/bravo-comment-card.png",
     "CHROME_PROFILE": "Default",  # Your actual Chrome profile
+    
+    # Feature Flags
+    "ENABLE_IMAGE_POSTING": True,  # Set to False to disable image attachments
     "COMMENT_BOX_XPATH": (
         "//div[@contenteditable='true' and @role='textbox' and ("
         "contains(@aria-placeholder, 'Write a public comment') or "
@@ -206,7 +209,7 @@ CONFIG = {
     
     # OpenAI LLM Configuration
     "openai": {
-        "enabled": True,
+        "enabled": False,
         "model": "gpt-4o-mini",  # or "gpt-3.5-turbo" for cost savings
         "max_tokens": 150,
         "temperature": 0.7,
