@@ -4,7 +4,7 @@
 
 This feature adds intelligent image pack suggestions based on post content analysis. When enabled, the system will automatically show the most relevant image packs first (e.g., ring-related packs for posts mentioning "rings").
 
-**Estimated Implementation Time**: 2-3 hours  
+**Estimated Implementation Time**: 2.5-3.5 hours  
 **Difficulty**: Medium  
 **Prerequisites**: Existing AI classification system (already implemented)
 
@@ -24,6 +24,8 @@ This feature adds intelligent image pack suggestions based on post content analy
 - **Smart toggle switch** in the comment card UI
 - **Filtered image pack display** based on detected categories  
 - **Database storage** of detected categories per comment
+- **🖼️ Enhanced image thumbnails** - 48x48px previews instead of filenames
+- **🔄 Fallback handling** for missing or broken images
 
 ---
 
@@ -323,7 +325,7 @@ async def get_comment_categories(comment_id: int):
 
 ---
 
-### Step 4: Frontend Toggle Implementation (1 hour)
+### Step 4: Frontend Toggle & Image Display Implementation (1.5 hours)
 
 **File**: `src/components/CommentCard.tsx`
 
@@ -543,7 +545,7 @@ Modify the image pack selection section:
               {pack.images.map(image => (
                 <label 
                   key={image.filename}
-                  className="flex items-center space-x-2 cursor-pointer hover:bg-accent/50 rounded p-1"
+                  className="flex items-center space-x-3 cursor-pointer hover:bg-accent/50 rounded p-2 transition-colors"
                 >
                   <input
                     type="checkbox"
@@ -551,9 +553,32 @@ Modify the image pack selection section:
                     onChange={() => handleImageSelect(image.filename)}
                     className="rounded border-2"
                   />
-                  <div className="text-sm">
-                    <div className="font-medium">{image.filename}</div>
-                    <div className="text-muted-foreground text-xs">{image.description}</div>
+                  
+                  {/* NEW: Image thumbnail display */}
+                  <div className="flex-shrink-0 w-12 h-12 rounded-md overflow-hidden bg-muted border">
+                    <img 
+                      src={`http://localhost:8000/uploads/image-packs/${image.filename}`}
+                      alt={image.description || image.filename}
+                      className="w-full h-full object-cover"
+                      loading="lazy"
+                      onError={(e) => {
+                        // Fallback for missing images
+                        e.currentTarget.style.display = 'none';
+                        e.currentTarget.nextElementSibling.style.display = 'flex';
+                      }}
+                    />
+                    {/* Fallback icon when image fails to load */}
+                    <div className="w-full h-full flex items-center justify-center text-muted-foreground hidden">
+                      <Image className="h-4 w-4" />
+                    </div>
+                  </div>
+                  
+                  {/* Image info */}
+                  <div className="text-sm flex-1 min-w-0">
+                    <div className="font-medium truncate">{image.filename}</div>
+                    <div className="text-muted-foreground text-xs truncate">
+                      {image.description || 'No description'}
+                    </div>
                   </div>
                 </label>
               ))}
@@ -673,6 +698,10 @@ if __name__ == "__main__":
 - [ ] Category badges show when smart mode is enabled
 - [ ] "suggested" badges appear on relevant packs
 - [ ] Fallback message shows when no packs match
+- [ ] **NEW:** Image thumbnails display correctly (48x48px)
+- [ ] **NEW:** Fallback icon shows when images fail to load
+- [ ] **NEW:** Image layout doesn't break with long filenames
+- [ ] **NEW:** Hover effects work smoothly on image selections
 
 ---
 

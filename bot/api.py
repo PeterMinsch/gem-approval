@@ -19,6 +19,7 @@ from selenium.webdriver.common.by import By
 from facebook_comment_bot import FacebookAICommentBot
 from bravo_config import CONFIG
 from database import db
+from performance_timer import log_performance_summary
 
 # Configure logging
 def setup_api_logger():
@@ -426,13 +427,15 @@ def post_comment_realtime(comment_id: str, post_url: str, comment_text: str, ima
 
 def add_comment_to_queue(post_url: str, post_text: str, generated_comment: str, post_type: str,
                         post_screenshot: str = None, post_images: str = None,
-                        post_author: str = None, post_engagement: str = None) -> str:
+                        post_author: str = None, post_engagement: str = None,
+                        detected_categories: List[str] = None) -> str:
     """Add a generated comment to the approval queue using database with enhanced post data"""
     logger.info(f"🔄 Adding to comment queue: {post_type} - {post_url[:50]}...")
     logger.info(f"📝 Comment text: {generated_comment[:100] if generated_comment else 'None'}...")
     
     queue_id = db.add_to_comment_queue(post_url, post_text, generated_comment, post_type,
-                                     post_screenshot, post_images, post_author, post_engagement)
+                                     post_screenshot, post_images, post_author, post_engagement,
+                                     detected_categories=detected_categories)
     
     if queue_id:
         bot_status["comments_queued"] += 1
@@ -928,6 +931,9 @@ def run_bot_with_queuing(bot_instance: FacebookAICommentBot, max_scrolls: int = 
     except Exception as e:
         logger.error(f"Error in run_bot_with_queuing: {e}")
     finally:
+        # Log performance summary before cleanup
+        log_performance_summary()
+        
         if bot_instance and bot_instance.driver:
             bot_instance.driver.quit()
             logger.info("Chrome browser closed")
@@ -1201,6 +1207,7 @@ async def generate_comment(request: CommentRequest):
         
         # Import the comment generation functions
         from facebook_comment_bot import classify_post, pick_comment_template, already_commented
+        from classifier import PostClassifier
         
         # Classify the post
         post_text = request.post_text or ""
@@ -1211,19 +1218,26 @@ async def generate_comment(request: CommentRequest):
                 message="Post text is required for comment generation",
                 post_type=None
             )
-            
-        post_type = classify_post(post_text)
         
-        if post_type == "skip":
+        # Use new classifier for detailed classification
+        from config_loader import get_dynamic_config
+        classifier = PostClassifier(get_dynamic_config())
+        classification = classifier.classify_post(post_text)
+        
+        # NEW: Detect jewelry categories
+        detected_categories = classifier.detect_jewelry_categories(post_text, classification)
+        logger.info(f"🎯 Detected categories: {detected_categories}")
+        
+        if classification.should_skip:
             return CommentResponse(
                 success=False,
                 comment=None,
-                message="Post filtered out by negative/brand logic",
-                post_type=post_type
+                message=f"Post filtered out: {classification.post_type}",
+                post_type=classification.post_type
             )
         
         # Generate comment
-        comment = pick_comment_template(post_type)
+        comment = pick_comment_template(classification.post_type)
         
         if comment:
             return CommentResponse(
@@ -1510,6 +1524,21 @@ async def get_comment_history():
     except Exception as e:
         logger.error(f"Error getting comment history: {e}")
         raise HTTPException(status_code=500, detail="Failed to get comment history")
+
+@app.get("/api/comments/{comment_id}/categories")
+async def get_comment_categories(comment_id: int):
+    """Get detected categories for a specific comment"""
+    try:
+        categories = db.get_comment_categories(comment_id)
+        return {
+            "success": True,
+            "comment_id": comment_id,
+            "categories": categories
+        }
+    except Exception as e:
+        logger.error(f"Error getting categories for comment {comment_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get comment categories")
+
 
 # New CRM API Endpoints
 
@@ -1804,6 +1833,51 @@ async def update_settings(request: SettingsUpdateRequest):
         logger.error(f"Error updating settings: {e}")
         raise HTTPException(status_code=500, detail="Failed to update settings")
 
+@app.get("/api/debug/database")
+async def debug_database_info():
+    """Debug endpoint to check database path and contents"""
+    import os
+    from database import db as debug_db
+    
+    try:
+        settings = debug_db.get_settings()
+        keywords = settings.get('negative_keywords', [])
+        
+        return {
+            "database_path": debug_db.db_path,
+            "full_database_path": os.path.abspath(debug_db.db_path),
+            "working_directory": os.getcwd(),
+            "keywords_count": len(keywords),
+            "last_3_keywords": keywords[-3:] if len(keywords) >= 3 else keywords,
+            "has_test_keyword": 'test-fixed-commit' in keywords
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.post("/api/settings/refresh")
+async def refresh_classifier_config():
+    """Force refresh of classifier configuration from database"""
+    try:
+        global bot_instance
+        
+        # Refresh the bot instance classifier if it exists
+        if bot_instance and hasattr(bot_instance, 'classifier'):
+            from config_loader import get_dynamic_config
+            new_config = get_dynamic_config()
+            bot_instance.classifier = PostClassifier(new_config)
+            logger.info("✅ Bot instance classifier configuration refreshed from database")
+            
+        return {
+            "success": True,
+            "message": "Classifier configuration refreshed successfully"
+        }
+    except Exception as e:
+        logger.error(f"Error refreshing classifier config: {e}")
+        return {
+            "success": False, 
+            "message": f"Failed to refresh config: {str(e)}"
+        }
+
 @app.get("/api/fb-accounts")
 async def get_fb_accounts():
     """Get Facebook accounts"""
@@ -1884,6 +1958,100 @@ async def bot_callback(data: Dict[str, Any]):
     except Exception as e:
         logger.error(f"Error processing bot callback: {e}")
         raise HTTPException(status_code=500, detail="Failed to process callback")
+
+# Comment Composer API Endpoints
+
+@app.post("/api/analyze-text")
+async def analyze_text(request: Dict[str, Any]):
+    """Analyze text in real-time for category detection"""
+    try:
+        text = request.get("text", "")
+        
+        if not text or len(text.strip()) < 5:
+            return {
+                "success": True,
+                "text": text,
+                "categories": []
+            }
+        
+        # Import classifier
+        from classifier import PostClassifier
+        from config_loader import get_dynamic_config
+        
+        classifier = PostClassifier(get_dynamic_config())
+        
+        # Perform real classification analysis on the text
+        real_classification = classifier.classify_post(text)
+        categories = classifier.detect_jewelry_categories(text, real_classification)
+        
+        logger.info(f"🔍 Classification result: type='{real_classification.post_type}', score={real_classification.confidence_score:.1f}")
+        logger.info(f"🏷️  Keyword matches: {real_classification.keyword_matches}")
+        
+        logger.info(f"📋 Text analysis for '{text[:50]}...' detected categories: {categories}")
+        
+        return {
+            "success": True,
+            "text": text,
+            "categories": categories or []
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error analyzing text: {e}")
+        return {
+            "success": False,
+            "text": request.get("text", ""),
+            "categories": [],
+            "error": str(e)
+        }
+
+@app.post("/api/comments/send")
+async def send_comment(request: Dict[str, Any]):
+    """Send a new comment with images (for CommentComposer)"""
+    try:
+        text = request.get("text", "").strip()
+        images = request.get("images", [])
+        master_image = request.get("master_image")
+        
+        if not text:
+            raise HTTPException(status_code=400, detail="Comment text is required")
+        
+        # For now, we'll just store the comment in the database
+        # Later you can integrate with your Facebook posting logic
+        
+        # Create a mock post URL for the composed comment
+        import uuid
+        comment_id = str(uuid.uuid4())[:8]
+        mock_post_url = f"https://facebook.com/composed-comment/{comment_id}"
+        
+        # Store in database using existing function
+        queue_id = add_comment_to_queue(
+            post_url=mock_post_url,
+            post_text=f"User composed comment - {text[:50]}...",
+            generated_comment=text,
+            post_type="COMPOSED",
+            post_images=json.dumps(images) if images else None,
+            post_author="User",
+            detected_categories=None  # Categories are already analyzed in real-time
+        )
+        
+        if queue_id:
+            logger.info(f"💬 New composed comment stored: {queue_id} with {len(images)} images")
+            
+            return {
+                "success": True,
+                "comment_id": queue_id,
+                "message": "Comment sent successfully",
+                "images_count": len(images),
+                "master_image": master_image
+            }
+        else:
+            raise HTTPException(status_code=500, detail="Failed to store comment")
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error sending comment: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to send comment: {str(e)}")
 
 @app.on_event("startup")
 async def startup_event():

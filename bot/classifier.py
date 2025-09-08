@@ -133,3 +133,156 @@ class PostClassifier:
             reasoning=reasoning,
             should_skip=(post_type == "skip" or total_score <= self.config.get("post_type_thresholds", {}).get("skip", POST_TYPE_THRESHOLDS["skip"]))
         )
+
+    def detect_jewelry_categories(self, text: str, classification: PostClassification) -> List[str]:
+        """
+        Detect specific jewelry categories from post text and existing classification.
+        
+        Args:
+            text: The original post text
+            classification: Existing PostClassification result
+            
+        Returns:
+            List of relevant image pack categories
+        """
+        logger = logging.getLogger(__name__)
+        logger.info(f"🔍 JEWELRY CATEGORY DETECTION START")
+        logger.info(f"📝 Input text: '{text[:100]}...'")
+        logger.info(f"📊 Classification: type='{classification.post_type}', score={classification.confidence_score}")
+        logger.info(f"🏷️  Classification keywords: {classification.keyword_matches}")
+        
+        categories = []
+        text_lower = text.lower()
+        matched_keywords = []
+        
+        # Enhanced keyword to category mapping with variations
+        keyword_to_category = {
+            # Jewelry Types - Enhanced with plurals and variations
+            # Ring variations - comprehensive
+            "ring": "RINGS", "rings": "RINGS",
+            "wedding ring": "RINGS", "wedding rings": "RINGS",
+            "engagement ring": "RINGS", "engagement rings": "RINGS", 
+            "anniversary ring": "RINGS", "anniversary rings": "RINGS",
+            "band": "RINGS", "bands": "RINGS",
+            "wedding band": "RINGS", "wedding bands": "RINGS",
+            "promise ring": "RINGS", "promise rings": "RINGS",
+            "signet ring": "RINGS", "signet rings": "RINGS",
+            "eternity ring": "RINGS", "eternity rings": "RINGS",
+            "class ring": "RINGS", "class rings": "RINGS",
+            "cocktail ring": "RINGS", "cocktail rings": "RINGS",
+            "solitaire": "RINGS", "solitaires": "RINGS",
+            
+            "necklace": "NECKLACES", "necklaces": "NECKLACES",
+            "pendant": "NECKLACES", "pendants": "NECKLACES",
+            "chain": "NECKLACES", "chains": "NECKLACES",
+            "choker": "NECKLACES", "chokers": "NECKLACES",
+            "locket": "NECKLACES", "lockets": "NECKLACES",
+            
+            "bracelet": "BRACELETS", "bracelets": "BRACELETS",
+            "bangle": "BRACELETS", "bangles": "BRACELETS",
+            "tennis bracelet": "BRACELETS", "tennis bracelets": "BRACELETS",
+            "charm bracelet": "BRACELETS", "charm bracelets": "BRACELETS",
+            
+            "earring": "EARRINGS", "earrings": "EARRINGS",
+            "stud": "EARRINGS", "studs": "EARRINGS",
+            "hoop": "EARRINGS", "hoops": "EARRINGS",
+            "drop earring": "EARRINGS", "drop earrings": "EARRINGS",
+            "dangle earring": "EARRINGS", "dangle earrings": "EARRINGS",
+            
+            # Services - Enhanced
+            "casting": "CASTING", "cast": "CASTING", 
+            "lost wax": "CASTING", "lost wax casting": "CASTING",
+            "investment casting": "CASTING",
+            
+            "cad": "CAD", "3d design": "CAD",
+            "stl": "CAD", "3dm": "CAD",
+            "matrix": "CAD", "rhino": "CAD",
+            "design": "CAD", "3d model": "CAD",
+            "computer aided": "CAD",
+            
+            "stone setting": "SETTING", "setting": "SETTING",
+            "prong": "SETTING", "prongs": "SETTING",
+            "pavé": "SETTING", "pave": "SETTING",
+            "bezel": "SETTING", "bezels": "SETTING",
+            "channel": "SETTING", "channel setting": "SETTING",
+            "micro setting": "SETTING", "micro pave": "SETTING",
+            
+            "engraving": "ENGRAVING", "engrave": "ENGRAVING",
+            "laser engraving": "ENGRAVING", "hand engraving": "ENGRAVING",
+            
+            "enamel": "ENAMEL", "enameling": "ENAMEL",
+            "color fill": "ENAMEL", "rhodium": "ENAMEL",
+            "plating": "ENAMEL", "gold plating": "ENAMEL"
+        }
+        
+        # Enhanced matching: Check for direct keyword matches AND partial matches
+        logger.info(f"🔎 Starting keyword matching against {len(keyword_to_category)} keywords")
+        
+        import re
+        for keyword, category in keyword_to_category.items():
+            # Direct match
+            if keyword in text_lower:
+                categories.append(category)
+                matched_keywords.append(f"'{keyword}' -> {category}")
+                logger.info(f"✅ Direct match: '{keyword}' -> {category}")
+            # Word boundary match for better detection
+            elif re.search(r'\b' + re.escape(keyword) + r'\b', text_lower):
+                if category not in categories:
+                    categories.append(category)
+                    matched_keywords.append(f"'{keyword}' (boundary) -> {category}")
+                    logger.info(f"✅ Boundary match: '{keyword}' -> {category}")
+        
+        logger.info(f"🎯 Direct keyword matches found: {len(matched_keywords)}")
+        if matched_keywords:
+            logger.info(f"📋 Matched keywords: {matched_keywords[:5]}...")  # Show first 5
+        
+        # Enhanced fallback logic based on classification and keyword analysis  
+        if not categories:
+            # Analyze the classification's keyword matches for better fallback
+            matched_keywords = classification.keyword_matches
+            
+            # Check if any service-related keywords were found in classification
+            service_detected = any(key in matched_keywords for key in ['service', 'general'])
+            
+            if classification.post_type == "service" or service_detected:
+                # For service posts, try to detect specific service types from classification keywords
+                service_categories = []
+                
+                # Check for specific service keywords in the matched keywords
+                all_matched = []
+                for key_list in matched_keywords.values():
+                    all_matched.extend(key_list)
+                
+                matched_text = " ".join(all_matched).lower()
+                
+                if any(word in matched_text for word in ['cad', '3d', 'design', 'model']):
+                    service_categories.append("CAD")
+                if any(word in matched_text for word in ['casting', 'cast', 'wax']):
+                    service_categories.append("CASTING") 
+                if any(word in matched_text for word in ['setting', 'stone', 'prong', 'bezel']):
+                    service_categories.append("SETTING")
+                if any(word in matched_text for word in ['engraving', 'engrave', 'laser']):
+                    service_categories.append("ENGRAVING")
+                    
+                # Default service categories if none detected
+                categories = service_categories if service_categories else ["CAD", "CASTING", "SETTING"]
+                
+            elif classification.post_type == "iso":
+                # ISO posts - try to detect what they're looking for
+                categories = ["RINGS", "NECKLACES", "BRACELETS", "EARRINGS"] # Show all jewelry types
+            else:
+                # General posts - broader category selection
+                categories = ["RINGS", "NECKLACES"] # Most common requests
+        
+        # Always include GENERIC as fallback for broader selection
+        if "GENERIC" not in categories:
+            categories.append("GENERIC")
+            logger.info("➕ Added GENERIC as fallback category")
+        
+        # Remove duplicates and return
+        final_categories = list(set(categories))
+        
+        logger.info(f"🏁 FINAL RESULT: {len(final_categories)} categories detected: {final_categories}")
+        logger.info(f"🔍 JEWELRY CATEGORY DETECTION END")
+        
+        return final_categories
