@@ -19,6 +19,7 @@ from selenium.webdriver.common.by import By
 from facebook_comment_bot import FacebookAICommentBot
 from bravo_config import CONFIG
 from database import db
+from performance_timer import log_performance_summary
 
 # Configure logging
 def setup_api_logger():
@@ -930,6 +931,9 @@ def run_bot_with_queuing(bot_instance: FacebookAICommentBot, max_scrolls: int = 
     except Exception as e:
         logger.error(f"Error in run_bot_with_queuing: {e}")
     finally:
+        # Log performance summary before cleanup
+        log_performance_summary()
+        
         if bot_instance and bot_instance.driver:
             bot_instance.driver.quit()
             logger.info("Chrome browser closed")

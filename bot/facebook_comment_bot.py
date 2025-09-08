@@ -27,6 +27,9 @@ from bravo_config import CONFIG
 from database import db
 from comment_generator import CommentGenerator as ExternalCommentGenerator
 
+# Import performance timer
+from performance_timer import time_method, log_performance_summary
+
 # Import our new modules
 from modules.browser_manager import BrowserManager
 from modules.post_extractor import PostExtractor
@@ -961,6 +964,7 @@ class FacebookAICommentBot:
             return False
 
 
+    @time_method
     def scrape_authors_and_generate_comments(self, scroll_count=5, pause_time=2):
         """
         Scrape Facebook post author names from the current page and generate a personalized comment for each using the class's comment generator.
@@ -1351,6 +1355,7 @@ class FacebookAICommentBot:
         except Exception as e:
             logger.error(f"Failed to save processed post: {e}")
 
+    @time_method
     def scroll_and_collect_post_links(self, max_scrolls=5):
         """Delegate to PostExtractor module."""
         if self.post_extractor:
@@ -2468,6 +2473,7 @@ class FacebookAICommentBot:
         
         return checks_passed
     
+    @time_method
     def run(self):
         logger.info("FacebookAICommentBot starting...")
         try:
@@ -2654,6 +2660,9 @@ class FacebookAICommentBot:
         except Exception as e:
             logger.critical(f"Bot execution failed: {e}")
         finally:
+            # Log performance summary before cleanup
+            log_performance_summary()
+            
             if self.driver:
                 self.driver.quit()
                 logger.info("Browser closed.")

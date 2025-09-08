@@ -16,6 +16,12 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import NoSuchElementException, StaleElementReferenceException, TimeoutException
 
+# Import performance timer
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from performance_timer import time_method
+
 logger = logging.getLogger(__name__)
 
 
@@ -33,6 +39,7 @@ class PostExtractor:
         self.driver = driver
         self.config = config
     
+    @time_method
     def scroll_and_collect_post_links(self, max_scrolls: int = 5) -> List[str]:
         """
         Scroll through the page and collect post links
@@ -124,6 +131,7 @@ class PostExtractor:
         
         return any(pattern in url for pattern in valid_patterns)
     
+    @time_method
     def get_post_text(self) -> str:
         """
         Extract the main text of the post for context or logging.
@@ -175,6 +183,7 @@ class PostExtractor:
         logger.warning("Could not extract post text")
         return ""
     
+    @time_method
     def extract_text_from_elements(self, elements: List[WebElement], method_name: str) -> str:
         """
         Extract and clean text from elements - ALTERNATIVE FIX: Smart post vs comment detection
@@ -265,6 +274,7 @@ class PostExtractor:
         
         return best_candidate['text']
     
+    @time_method
     def get_post_author(self) -> str:
         """
         Extract the post author name from Facebook post page.

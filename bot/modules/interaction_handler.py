@@ -15,6 +15,12 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, ElementClickInterceptedException
 
+# Import performance timer
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from performance_timer import time_method
+
 logger = logging.getLogger(__name__)
 
 
@@ -32,6 +38,7 @@ class InteractionHandler:
         self.driver = driver
         self.config = config
     
+    @time_method
     def click_element_safely(self, element: WebElement, use_js: bool = False, max_retries: int = 3) -> bool:
         """
         Safely click an element with retry logic
@@ -106,6 +113,7 @@ class InteractionHandler:
         except Exception as e:
             logger.debug(f"Mouse jiggle failed: {e}")
     
+    @time_method
     def type_text_human_like(self, element: WebElement, text: str, delay_range: tuple = (0.05, 0.15)) -> bool:
         """
         Type text with human-like delays
@@ -166,6 +174,7 @@ class InteractionHandler:
                     break
         return text
     
+    @time_method
     def find_and_click_comment_button(self, post_element: WebElement) -> bool:
         """
         Find and click the comment button on a post
@@ -194,6 +203,7 @@ class InteractionHandler:
         logger.warning("Could not find comment button")
         return False
     
+    @time_method
     def submit_comment_form(self) -> bool:
         """
         Submit the comment form
@@ -304,6 +314,7 @@ class InteractionHandler:
             logger.error(f"Failed to upload images: {e}")
             return False
     
+    @time_method
     def scroll_to_element(self, element: WebElement) -> bool:
         """
         Scroll element into view
