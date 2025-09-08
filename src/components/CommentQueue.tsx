@@ -16,6 +16,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "./ui/select";
+import { Switch } from "./ui/switch";
+import { Label } from "./ui/label";
 import {
   CheckCircle,
   XCircle,
@@ -23,11 +25,10 @@ import {
   ExternalLink,
   MessageCircle,
   Image,
-  ChevronDown,
-  ChevronRight,
-  //Template,
+  Sparkles,
 } from "lucide-react";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./ui/collapsible";
+import { ImageGallery } from "./ImageGallery";
+import { getSuggestedImages } from "@/services/categoryMapper";
 
 interface QueuedComment {
   id: string;
@@ -73,6 +74,10 @@ export const CommentQueue: React.FC = () => {
   const [selectedImages, setSelectedImages] = useState<Record<string, string[]>>({});
   const [showImageSelector, setShowImageSelector] = useState<Record<string, boolean>>({});
   const [imagePacks, setImagePacks] = useState<ImagePack[]>([]);
+  // Smart categorization state
+  const [smartMode, setSmartMode] = useState<Record<string, boolean>>({});
+  const [detectedCategories, setDetectedCategories] = useState<Record<string, string[]>>({});
+  const [loadingCategories, setLoadingCategories] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     fetchComments();
@@ -249,10 +254,63 @@ export const CommentQueue: React.FC = () => {
   };
 
   const toggleImageSelector = (commentId: string) => {
+    console.log('[DEBUG] toggleImageSelector:', { commentId, currentState: showImageSelector[commentId] });
     setShowImageSelector(prev => ({
       ...prev,
       [commentId]: !prev[commentId]
     }));
+    
+    // Load categories when opening image selector for the first time
+    if (!showImageSelector[commentId] && !detectedCategories[commentId]) {
+      console.log('[DEBUG] Loading categories for comment:', commentId);
+      loadDetectedCategories(commentId);
+    }
+  };
+  
+  const loadDetectedCategories = async (commentId: string) => {
+    console.log('[DEBUG] loadDetectedCategories started for:', commentId);
+    setLoadingCategories(prev => ({ ...prev, [commentId]: true }));
+    try {
+      const response = await fetch(`http://localhost:8000/api/comments/${commentId}/categories`);
+      console.log('[DEBUG] API response status:', response.status, response.ok);
+      if (response.ok) {
+        const data = await response.json();
+        console.log('[DEBUG] API response data:', data);
+        setDetectedCategories(prev => ({
+          ...prev,
+          [commentId]: data.categories || []
+        }));
+        console.log('[DEBUG] Categories stored for comment', commentId, ':', data.categories || []);
+        // Enable smart mode by default if categories are detected
+        if (data.categories && data.categories.length > 0) {
+          setSmartMode(prev => ({ ...prev, [commentId]: true }));
+        }
+      }
+    } catch (error) {
+      console.error(`Error loading categories for comment ${commentId}:`, error);
+    } finally {
+      setLoadingCategories(prev => ({ ...prev, [commentId]: false }));
+    }
+  };
+  
+  const handleBulkImageSelect = (commentId: string, filenames: string[]) => {
+    setSelectedImages(prev => ({
+      ...prev,
+      [commentId]: filenames
+    }));
+  };
+  
+  const toggleSmartMode = (commentId: string, enabled: boolean) => {
+    setSmartMode(prev => ({ ...prev, [commentId]: enabled }));
+    
+    // Auto-select suggested images when enabling smart mode
+    if (enabled && detectedCategories[commentId]?.length > 0) {
+      const suggested = getSuggestedImages(detectedCategories[commentId], imagePacks, 2);
+      setSelectedImages(prev => ({
+        ...prev,
+        [commentId]: suggested
+      }));
+    }
   };
 
   // Helper function to personalize template text with first name
@@ -463,40 +521,77 @@ export const CommentQueue: React.FC = () => {
                         </div>
                         {editingComment === comment.id ? (
                           <div className="space-y-3">
-                            {/* Image Pack Selection */}
+                            {/* Image Gallery - New Visual Interface */}
                             {showImageSelector[comment.id] && (
-                              <div className="border rounded-md p-3 bg-muted/30 space-y-3">
-                                <h5 className="font-medium text-sm">Select Images to Attach:</h5>
-                                <div className="space-y-2">
-                                  {imagePacks.map(pack => (
-                                    <Collapsible key={pack.id}>
-                                      <CollapsibleTrigger asChild>
-                                        <Button variant="ghost" className="justify-between h-8 w-full px-2 text-left">
-                                          <span className="text-sm font-medium">{pack.name}</span>
-                                          <ChevronRight className="h-4 w-4" />
-                                        </Button>
-                                      </CollapsibleTrigger>
-                                      <CollapsibleContent className="space-y-1 pl-4">
-                                        {pack.images.map(image => (
-                                          <label 
-                                            key={image.filename}
-                                            className="flex items-center space-x-2 cursor-pointer hover:bg-accent/50 rounded p-1"
-                                          >
-                                            <input
-                                              type="checkbox"
-                                              checked={(selectedImages[comment.id] || []).includes(image.filename)}
-                                              onChange={() => handleImageSelect(comment.id, image.filename)}
-                                              className="rounded border-2"
-                                            />
-                                            <div className="text-sm">
-                                              <div className="font-medium">{image.filename.split('/').pop()}</div>
-                                              <div className="text-muted-foreground text-xs">{image.description}</div>
-                                            </div>
-                                          </label>
-                                        ))}
-                                      </CollapsibleContent>
-                                    </Collapsible>
-                                  ))}
+                              <div className="border rounded-lg bg-background/50 backdrop-blur-sm">
+                                <div className="border-b p-3">
+                                  <div className="flex items-center justify-between">
+                                    <div className="flex items-center gap-3">
+                                      <h5 className="font-semibold text-sm">Select Images</h5>
+                                      
+                                      {/* Smart Mode Toggle */}
+                                      <div className="flex items-center gap-2">
+                                        <Switch
+                                          id={`smart-mode-${comment.id}`}
+                                          checked={smartMode[comment.id] || false}
+                                          onCheckedChange={(checked) => toggleSmartMode(comment.id, checked)}
+                                          disabled={loadingCategories[comment.id]}
+                                        />
+                                        <Label htmlFor={`smart-mode-${comment.id}`} className="text-xs cursor-pointer">
+                                          <span className="flex items-center gap-1">
+                                            <Sparkles className="h-3 w-3" />
+                                            Smart Mode
+                                          </span>
+                                        </Label>
+                                      </div>
+                                      
+                                      {/* Category count */}
+                                      {loadingCategories[comment.id] ? (
+                                        <Badge variant="outline" className="text-xs">
+                                          Loading categories...
+                                        </Badge>
+                                      ) : detectedCategories[comment.id]?.length > 0 ? (
+                                        <Badge variant="secondary" className="text-xs">
+                                          {detectedCategories[comment.id].length} categories detected
+                                        </Badge>
+                                      ) : (
+                                        <Badge variant="outline" className="text-xs text-muted-foreground">
+                                          No categories detected
+                                        </Badge>
+                                      )}
+                                    </div>
+                                    
+                                    {/* Auto-select button */}
+                                    {smartMode[comment.id] && detectedCategories[comment.id]?.length > 0 && (
+                                      <Button
+                                        variant="outline"
+                                        size="sm"
+                                        onClick={() => {
+                                          const suggested = getSuggestedImages(detectedCategories[comment.id], imagePacks, 2);
+                                          setSelectedImages(prev => ({
+                                            ...prev,
+                                            [comment.id]: suggested
+                                          }));
+                                        }}
+                                        className="text-xs"
+                                      >
+                                        <Sparkles className="h-3 w-3 mr-1" />
+                                        Auto-Select Best
+                                      </Button>
+                                    )}
+                                  </div>
+                                </div>
+                                
+                                <div className="p-3">
+                                  <ImageGallery
+                                    categories={smartMode[comment.id] ? (detectedCategories[comment.id] || []) : []}
+                                    imagePacks={imagePacks}
+                                    selectedImages={selectedImages[comment.id] || []}
+                                    onImageSelect={(filename) => handleImageSelect(comment.id, filename)}
+                                    onBulkSelect={(filenames) => handleBulkImageSelect(comment.id, filenames)}
+                                    smartMode={smartMode[comment.id] || false}
+                                    loading={loadingCategories[comment.id] || false}
+                                  />
                                 </div>
                               </div>
                             )}

@@ -133,3 +133,95 @@ class PostClassifier:
             reasoning=reasoning,
             should_skip=(post_type == "skip" or total_score <= self.config.get("post_type_thresholds", {}).get("skip", POST_TYPE_THRESHOLDS["skip"]))
         )
+
+    def detect_jewelry_categories(self, text: str, classification: PostClassification) -> List[str]:
+        """
+        Detect specific jewelry categories from post text and existing classification.
+        
+        Args:
+            text: The original post text
+            classification: Existing PostClassification result
+            
+        Returns:
+            List of relevant image pack categories
+        """
+        categories = []
+        text_lower = text.lower()
+        
+        # Keyword to category mapping
+        keyword_to_category = {
+            # Jewelry Types
+            "ring": "RINGS",
+            "wedding ring": "RINGS", 
+            "engagement ring": "RINGS",
+            "anniversary ring": "RINGS",
+            "band": "RINGS",
+            "wedding band": "RINGS",
+            
+            "necklace": "NECKLACES",
+            "pendant": "NECKLACES", 
+            "chain": "NECKLACES",
+            "choker": "NECKLACES",
+            
+            "bracelet": "BRACELETS",
+            "bangle": "BRACELETS",
+            "tennis bracelet": "BRACELETS",
+            
+            "earring": "EARRINGS",
+            "earrings": "EARRINGS",
+            "stud": "EARRINGS",
+            "hoop": "EARRINGS",
+            
+            # Services
+            "casting": "CASTING",
+            "cast": "CASTING", 
+            "lost wax": "CASTING",
+            
+            "cad": "CAD",
+            "3d design": "CAD",
+            "stl": "CAD",
+            "3dm": "CAD",
+            "matrix": "CAD",
+            "rhino": "CAD",
+            
+            "stone setting": "SETTING",
+            "setting": "SETTING",
+            "prong": "SETTING",
+            "pavé": "SETTING",
+            "pave": "SETTING",
+            "bezel": "SETTING",
+            "channel": "SETTING",
+            
+            "engraving": "ENGRAVING",
+            "laser engraving": "ENGRAVING",
+            "hand engraving": "ENGRAVING",
+            
+            "enamel": "ENAMEL",
+            "color fill": "ENAMEL",
+            "rhodium": "ENAMEL",
+            "plating": "ENAMEL"
+        }
+        
+        # Check for direct keyword matches
+        for keyword, category in keyword_to_category.items():
+            if keyword in text_lower:
+                categories.append(category)
+        
+        # Fallback based on existing classification
+        if not categories:
+            if classification.post_type == "service":
+                # Default service categories
+                categories = ["CAD", "CASTING", "SETTING"]
+            elif classification.post_type == "iso":
+                # ISO posts might be looking for specific items
+                categories = ["GENERIC"]
+            else:
+                # General posts get generic category
+                categories = ["GENERIC"]
+        
+        # Always include GENERIC as fallback
+        if "GENERIC" not in categories:
+            categories.append("GENERIC")
+        
+        # Remove duplicates and return
+        return list(set(categories))

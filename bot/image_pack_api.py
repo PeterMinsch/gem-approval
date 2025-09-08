@@ -109,6 +109,64 @@ async def create_image_pack(image_pack: ImagePackCreate):
         logger.error(f"Error creating image pack: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to create image pack: {str(e)}")
 
+@router.get("/image-packs/by-categories")
+async def get_images_by_categories(categories: str = None):
+    """Get image packs filtered by categories with grouped images"""
+    try:
+        # Parse categories from comma-separated string
+        category_list = categories.split(',') if categories else []
+        
+        # Get all image packs
+        all_packs = db.get_image_packs()
+        
+        if not category_list:
+            # Return all packs if no categories specified
+            return {
+                "success": True,
+                "categories": [],
+                "packs": all_packs
+            }
+        
+        # Filter packs based on categories
+        filtered_packs = []
+        category_keywords = {
+            'RINGS': ['ring', 'band', 'wedding', 'engagement'],
+            'NECKLACES': ['necklace', 'pendant', 'chain'],
+            'BRACELETS': ['bracelet', 'bangle'],
+            'EARRINGS': ['earring', 'stud', 'hoop'],
+            'CASTING': ['cast', 'mold', 'manufacturing'],
+            'CAD': ['cad', '3d', 'design'],
+            'SETTING': ['setting', 'stone', 'diamond'],
+            'ENGRAVING': ['engrav', 'etch'],
+            'ENAMEL': ['enamel', 'color'],
+            'GENERIC': ['generic', 'general', 'bravo']
+        }
+        
+        for pack in all_packs:
+            pack_name_lower = pack['name'].lower()
+            for category in category_list:
+                if category in category_keywords:
+                    keywords = category_keywords[category]
+                    if any(keyword in pack_name_lower for keyword in keywords):
+                        filtered_packs.append(pack)
+                        break
+        
+        # Always include generic pack if available
+        generic_pack = next((p for p in all_packs if 'generic' in p['name'].lower()), None)
+        if generic_pack and generic_pack not in filtered_packs:
+            filtered_packs.append(generic_pack)
+        
+        return {
+            "success": True,
+            "categories": category_list,
+            "packs": filtered_packs,
+            "total": len(filtered_packs)
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting images by categories: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get images by categories")
+
 @router.get("/image-packs", response_model=List[ImagePackResponse])
 async def get_image_packs():
     """Get all image packs"""

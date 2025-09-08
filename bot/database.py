@@ -199,6 +199,17 @@ class BotDatabase:
                 else:
                     logger.debug(f"Migration note: {e}")
             
+            # Add detected_categories column if it doesn't exist (migration)
+            try:
+                cursor.execute("ALTER TABLE comment_queue ADD COLUMN detected_categories TEXT DEFAULT '[]'")
+                logger.info("Added detected_categories column to comment_queue table")
+            except Exception as e:
+                # Column probably already exists
+                if "duplicate column name" in str(e).lower():
+                    logger.debug("detected_categories column already exists in comment_queue table")
+                else:
+                    logger.debug(f"Migration note: {e}")
+            
             # Bot statistics and sessions tables
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bot_stats (
@@ -386,9 +397,12 @@ class BotDatabase:
     def add_to_comment_queue(self, post_url: str, post_text: str, comment_text: str, 
                             post_type: str, post_screenshot: str = None, post_images: str = None,
                             post_author: str = None, post_engagement: str = None,
-                            image_pack_id: str = None) -> Optional[int]:
+                            image_pack_id: str = None, detected_categories: List[str] = None) -> Optional[int]:
         """Add a comment to the approval queue with enhanced post data"""
         try:
+            # Convert categories to JSON string
+            categories_json = json.dumps(detected_categories or [])
+            
             # For photo URLs, preserve parameters; for others, normalize
             if '/photo/' in post_url and 'fbid=' in post_url:
                 # Photo URLs need their parameters to work properly
@@ -402,10 +416,11 @@ class BotDatabase:
                 cursor = conn.cursor()
                 cursor.execute("""
                     INSERT INTO comment_queue (post_url, post_text, comment_text, post_type, 
-                                            post_screenshot, post_images, post_author, post_engagement, image_pack_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                            post_screenshot, post_images, post_author, post_engagement, 
+                                            image_pack_id, detected_categories)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (norm_url, post_text, comment_text, post_type, post_screenshot, 
-                     post_images, post_author, post_engagement, image_pack_id))
+                     post_images, post_author, post_engagement, image_pack_id, categories_json))
                 conn.commit()
                 queue_id = cursor.lastrowid
                 logger.info(f"Added comment to queue (ID: {queue_id}): {norm_url}")
@@ -1096,6 +1111,25 @@ class BotDatabase:
         except Exception as e:
             logger.error(f"Failed to update comment text: {e}")
             return False
+
+    def get_comment_categories(self, comment_id: int) -> List[str]:
+        """Get detected categories for a specific comment"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT detected_categories FROM comment_queue 
+                    WHERE id = ?
+                """, (comment_id,))
+                
+                result = cursor.fetchone()
+                if result and result[0]:
+                    return json.loads(result[0])
+                return []
+                
+        except Exception as e:
+            logger.error(f"Error getting comment categories: {e}")
+            return []
     
     def record_bot_session_start(self) -> Optional[int]:
         """Record the start of a bot session"""

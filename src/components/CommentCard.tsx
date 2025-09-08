@@ -3,9 +3,12 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardFooter, CardHeader } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
-import { ExternalLink, Check, X, Clock, Image, ChevronDown, ChevronRight } from "lucide-react";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
+import { ExternalLink, Check, X, Clock, Image, Sparkles } from "lucide-react";
 import { StatusBadge } from "./StatusBadge";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { ImageGallery } from "./ImageGallery";
+import { getSuggestedImages } from "@/services/categoryMapper";
 
 export type CommentStatus = 'pending' | 'approved' | 'rejected' | 'posted';
 
@@ -38,12 +41,42 @@ export function CommentCard({ comment, onApprove, onReject }: CommentCardProps) 
   const [selectedImages, setSelectedImages] = useState<string[]>([]);
   const [imagePacks, setImagePacks] = useState<ImagePack[]>([]);
   const [loading, setLoading] = useState(false);
+  
+  // Smart categorization state
+  const [smartMode, setSmartMode] = useState(true); // Default to smart mode ON
+  const [detectedCategories, setDetectedCategories] = useState<string[]>([]);
+  const [isLoadingCategories, setIsLoadingCategories] = useState(false);
+  const [autoSelectEnabled, setAutoSelectEnabled] = useState(false);
+  
   const isPending = comment.status === 'pending';
 
-  // Load image packs when component mounts
+  // Load detected categories for this comment
+  const loadDetectedCategories = async () => {
+    setIsLoadingCategories(true);
+    try {
+      const response = await fetch(`http://localhost:8000/api/comments/${comment.id}/categories`);
+      if (response.ok) {
+        const data = await response.json();
+        setDetectedCategories(data.categories || []);
+        console.log('Detected categories:', data.categories);
+      } else {
+        console.error('Failed to load categories:', response.status);
+        setDetectedCategories([]);
+      }
+    } catch (error) {
+      console.error('Error loading categories:', error);
+      setDetectedCategories([]);
+    } finally {
+      setIsLoadingCategories(false);
+    }
+  };
+
+  // Load image packs and categories when component mounts
   useEffect(() => {
-    const loadImagePacks = async () => {
+    const loadData = async () => {
       setLoading(true);
+      
+      // Load image packs (existing code)
       try {
         const response = await fetch('http://localhost:8000/api/image-packs');
         if (response.ok) {
@@ -54,13 +87,16 @@ export function CommentCard({ comment, onApprove, onReject }: CommentCardProps) 
         }
       } catch (error) {
         console.error('Error loading image packs:', error);
-      } finally {
-        setLoading(false);
       }
+      
+      // NEW: Load detected categories
+      await loadDetectedCategories();
+      
+      setLoading(false);
     };
 
-    loadImagePacks();
-  }, []);
+    loadData();
+  }, [comment.id]); // Add comment.id as dependency
 
   const handleImageSelect = (filename: string) => {
     setSelectedImages(prev => 
@@ -69,6 +105,20 @@ export function CommentCard({ comment, onApprove, onReject }: CommentCardProps) 
         : [...prev, filename]
     );
   };
+  
+  const handleBulkImageSelect = (filenames: string[]) => {
+    setSelectedImages(filenames);
+  };
+  
+  // Auto-select suggested images when smart mode is enabled
+  useEffect(() => {
+    if (autoSelectEnabled && smartMode && detectedCategories.length > 0 && imagePacks.length > 0) {
+      const suggested = getSuggestedImages(detectedCategories, imagePacks, 2);
+      setSelectedImages(suggested);
+      setAutoSelectEnabled(false); // Only auto-select once
+    }
+  }, [autoSelectEnabled, smartMode, detectedCategories, imagePacks]);
+
   
   return (
     <Card className="transition-all duration-200 hover:shadow-lg border border-border/50">
@@ -113,45 +163,72 @@ export function CommentCard({ comment, onApprove, onReject }: CommentCardProps) 
             )}
           </div>
           
-          {/* Image Pack Selection */}
+          {/* Image Gallery - New Visual Interface */}
           {showImageSelector && isPending && (
-            <div className="border rounded-md p-3 bg-muted/30 space-y-3">
-              <h5 className="font-medium text-sm">Select Images to Attach:</h5>
-              {loading ? (
-                <div className="text-sm text-muted-foreground">Loading image packs...</div>
-              ) : (
-                <div className="space-y-2">
-                  {imagePacks.map(pack => (
-                    <Collapsible key={pack.id}>
-                      <CollapsibleTrigger asChild>
-                        <Button variant="ghost" className="justify-between h-8 w-full px-2 text-left">
-                          <span className="text-sm font-medium">{pack.name}</span>
-                          <ChevronRight className="h-4 w-4" />
-                        </Button>
-                      </CollapsibleTrigger>
-                      <CollapsibleContent className="space-y-1 pl-4">
-                        {pack.images.map(image => (
-                          <label 
-                            key={image.filename}
-                            className="flex items-center space-x-2 cursor-pointer hover:bg-accent/50 rounded p-1"
-                          >
-                            <input
-                              type="checkbox"
-                              checked={selectedImages.includes(image.filename)}
-                              onChange={() => handleImageSelect(image.filename)}
-                              className="rounded border-2"
-                            />
-                            <div className="text-sm">
-                              <div className="font-medium">{image.filename}</div>
-                              <div className="text-muted-foreground text-xs">{image.description}</div>
-                            </div>
-                          </label>
-                        ))}
-                      </CollapsibleContent>
-                    </Collapsible>
-                  ))}
+            <div className="border rounded-lg bg-background/50 backdrop-blur-sm">
+              <div className="border-b p-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <h5 className="font-semibold text-sm">Select Images</h5>
+                    
+                    {/* Smart Mode Toggle */}
+                    <div className="flex items-center gap-2">
+                      <Switch
+                        id="smart-gallery"
+                        checked={smartMode}
+                        onCheckedChange={(checked) => {
+                          setSmartMode(checked);
+                          if (checked && detectedCategories.length > 0) {
+                            setAutoSelectEnabled(true);
+                          }
+                        }}
+                        disabled={isLoadingCategories || detectedCategories.length === 0}
+                      />
+                      <Label htmlFor="smart-gallery" className="text-xs cursor-pointer">
+                        <span className="flex items-center gap-1">
+                          <Sparkles className="h-3 w-3" />
+                          Smart Mode
+                        </span>
+                      </Label>
+                    </div>
+                    
+                    {/* Category count */}
+                    {detectedCategories.length > 0 && (
+                      <Badge variant="secondary" className="text-xs">
+                        {detectedCategories.length} categories detected
+                      </Badge>
+                    )}
+                  </div>
+                  
+                  {/* Auto-select button */}
+                  {smartMode && detectedCategories.length > 0 && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        const suggested = getSuggestedImages(detectedCategories, imagePacks, 2);
+                        setSelectedImages(suggested);
+                      }}
+                      className="text-xs"
+                    >
+                      <Sparkles className="h-3 w-3 mr-1" />
+                      Auto-Select Best
+                    </Button>
+                  )}
                 </div>
-              )}
+              </div>
+              
+              <div className="p-3">
+                <ImageGallery
+                  categories={smartMode ? detectedCategories : []}
+                  imagePacks={imagePacks}
+                  selectedImages={selectedImages}
+                  onImageSelect={handleImageSelect}
+                  onBulkSelect={handleBulkImageSelect}
+                  smartMode={smartMode}
+                  loading={loading || isLoadingCategories}
+                />
+              </div>
             </div>
           )}
           

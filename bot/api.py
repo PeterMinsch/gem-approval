@@ -426,13 +426,15 @@ def post_comment_realtime(comment_id: str, post_url: str, comment_text: str, ima
 
 def add_comment_to_queue(post_url: str, post_text: str, generated_comment: str, post_type: str,
                         post_screenshot: str = None, post_images: str = None,
-                        post_author: str = None, post_engagement: str = None) -> str:
+                        post_author: str = None, post_engagement: str = None,
+                        detected_categories: List[str] = None) -> str:
     """Add a generated comment to the approval queue using database with enhanced post data"""
     logger.info(f"🔄 Adding to comment queue: {post_type} - {post_url[:50]}...")
     logger.info(f"📝 Comment text: {generated_comment[:100] if generated_comment else 'None'}...")
     
     queue_id = db.add_to_comment_queue(post_url, post_text, generated_comment, post_type,
-                                     post_screenshot, post_images, post_author, post_engagement)
+                                     post_screenshot, post_images, post_author, post_engagement,
+                                     detected_categories=detected_categories)
     
     if queue_id:
         bot_status["comments_queued"] += 1
@@ -1201,6 +1203,7 @@ async def generate_comment(request: CommentRequest):
         
         # Import the comment generation functions
         from facebook_comment_bot import classify_post, pick_comment_template, already_commented
+        from classifier import PostClassifier
         
         # Classify the post
         post_text = request.post_text or ""
@@ -1211,19 +1214,25 @@ async def generate_comment(request: CommentRequest):
                 message="Post text is required for comment generation",
                 post_type=None
             )
-            
-        post_type = classify_post(post_text)
         
-        if post_type == "skip":
+        # Use new classifier for detailed classification
+        classifier = PostClassifier(CONFIG)
+        classification = classifier.classify_post(post_text)
+        
+        # NEW: Detect jewelry categories
+        detected_categories = classifier.detect_jewelry_categories(post_text, classification)
+        logger.info(f"🎯 Detected categories: {detected_categories}")
+        
+        if classification.should_skip:
             return CommentResponse(
                 success=False,
                 comment=None,
-                message="Post filtered out by negative/brand logic",
-                post_type=post_type
+                message=f"Post filtered out: {classification.post_type}",
+                post_type=classification.post_type
             )
         
         # Generate comment
-        comment = pick_comment_template(post_type)
+        comment = pick_comment_template(classification.post_type)
         
         if comment:
             return CommentResponse(
@@ -1510,6 +1519,21 @@ async def get_comment_history():
     except Exception as e:
         logger.error(f"Error getting comment history: {e}")
         raise HTTPException(status_code=500, detail="Failed to get comment history")
+
+@app.get("/api/comments/{comment_id}/categories")
+async def get_comment_categories(comment_id: int):
+    """Get detected categories for a specific comment"""
+    try:
+        categories = db.get_comment_categories(comment_id)
+        return {
+            "success": True,
+            "comment_id": comment_id,
+            "categories": categories
+        }
+    except Exception as e:
+        logger.error(f"Error getting categories for comment {comment_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get comment categories")
+
 
 # New CRM API Endpoints
 
