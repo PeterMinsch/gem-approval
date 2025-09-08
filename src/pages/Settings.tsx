@@ -183,6 +183,30 @@ const Settings = () => {
     }
   };
 
+  const autoSaveSettings = async (updatedSettings: Settings) => {
+    try {
+      const response = await fetch("/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(updatedSettings),
+      });
+
+      if (response.ok) {
+        // Refresh classifier configuration to apply changes immediately
+        await fetch("/api/settings/refresh", { method: "POST" });
+      } else {
+        throw new Error("Failed to save settings");
+      }
+    } catch (error) {
+      console.error("Error auto-saving settings:", error);
+      toast({
+        title: "Error",
+        description: "Failed to save changes automatically",
+        variant: "destructive",
+      });
+    }
+  };
+
   const saveSettings = async () => {
     setSaving(true);
     try {
@@ -193,10 +217,21 @@ const Settings = () => {
       });
 
       if (response.ok) {
-        toast({
-          title: "Success",
-          description: "Settings saved successfully",
-        });
+        // Refresh classifier configuration to apply changes immediately
+        try {
+          await fetch("/api/settings/refresh", { method: "POST" });
+          toast({
+            title: "Success",
+            description: "Settings saved and applied successfully",
+          });
+        } catch (refreshError) {
+          console.warn("Settings saved but failed to refresh classifier:", refreshError);
+          toast({
+            title: "Partial Success",
+            description: "Settings saved but may require restart to take effect",
+            variant: "destructive",
+          });
+        }
       } else {
         throw new Error("Failed to save settings");
       }
@@ -212,75 +247,87 @@ const Settings = () => {
     }
   };
 
-  const addBrand = () => {
+  const addBrand = async () => {
     if (
       newBrand.trim() &&
       !settings.brand_blacklist.includes(newBrand.trim())
     ) {
-      setSettings((prev) => ({
-        ...prev,
-        brand_blacklist: [...prev.brand_blacklist, newBrand.trim()],
-      }));
+      const updatedSettings = {
+        ...settings,
+        brand_blacklist: [...settings.brand_blacklist, newBrand.trim()],
+      };
+      setSettings(updatedSettings);
       setNewBrand("");
+      await autoSaveSettings(updatedSettings);
     }
   };
 
-  const removeBrand = (brand: string) => {
-    setSettings((prev) => ({
-      ...prev,
-      brand_blacklist: prev.brand_blacklist.filter((b) => b !== brand),
-    }));
+  const removeBrand = async (brand: string) => {
+    const updatedSettings = {
+      ...settings,
+      brand_blacklist: settings.brand_blacklist.filter((b) => b !== brand),
+    };
+    setSettings(updatedSettings);
+    await autoSaveSettings(updatedSettings);
   };
 
-  const addKeyword = (type: "negative" | "service" | "iso") => {
+  const addKeyword = async (type: "negative" | "service" | "iso") => {
     if (newKeyword.trim()) {
       const field = `${type}_keywords` as keyof Settings;
       const currentKeywords = settings[field] as string[];
       if (!currentKeywords.includes(newKeyword.trim())) {
-        setSettings((prev) => ({
-          ...prev,
+        const updatedSettings = {
+          ...settings,
           [field]: [...currentKeywords, newKeyword.trim()],
-        }));
+        };
+        setSettings(updatedSettings);
         setNewKeyword("");
+        await autoSaveSettings(updatedSettings);
       }
     }
   };
 
-  const removeKeyword = (
+  const removeKeyword = async (
     type: "negative" | "service" | "iso",
     keyword: string
   ) => {
     const field = `${type}_keywords` as keyof Settings;
     const currentKeywords = settings[field] as string[];
-    setSettings((prev) => ({
-      ...prev,
+    const updatedSettings = {
+      ...settings,
       [field]: currentKeywords.filter((k) => k !== keyword),
-    }));
+    };
+    setSettings(updatedSettings);
+    await autoSaveSettings(updatedSettings);
   };
 
-  const addModifier = () => {
+  const addModifier = async () => {
     if (
       newModifier.trim() &&
       !settings.allowed_brand_modifiers.includes(newModifier.trim())
     ) {
-      setSettings((prev) => ({
-        ...prev,
+      const updatedSettings = {
+        ...settings,
         allowed_brand_modifiers: [
-          ...prev.allowed_brand_modifiers,
+          ...settings.allowed_brand_modifiers,
           newModifier.trim(),
         ],
-      }));
+      };
+      setSettings(updatedSettings);
       setNewModifier("");
+      await autoSaveSettings(updatedSettings);
     }
   };
 
-  const removeModifier = (modifier: string) => {
-    setSettings((prev) => ({
-      ...prev,
-      allowed_brand_modifiers: prev.allowed_brand_modifiers.filter(
+  const removeModifier = async (modifier: string) => {
+    const updatedSettings = {
+      ...settings,
+      allowed_brand_modifiers: settings.allowed_brand_modifiers.filter(
         (m) => m !== modifier
       ),
-    }));
+    };
+    setSettings(updatedSettings);
+    await autoSaveSettings(updatedSettings);
   };
 
   // Image pack management functions

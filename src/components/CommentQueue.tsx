@@ -422,13 +422,13 @@ export const CommentQueue: React.FC = () => {
   const getPostTypeColor = (postType: string) => {
     switch (postType) {
       case "service":
-        return "bg-blue-100 text-blue-800";
+        return "bg-gradient-to-r from-blue-500 to-blue-600 text-white shadow-lg";
       case "iso":
-        return "bg-green-100 text-green-800";
+        return "bg-gradient-to-r from-emerald-500 to-green-600 text-white shadow-lg";
       case "general":
-        return "bg-purple-100 text-purple-800";
+        return "bg-gradient-to-r from-purple-500 to-indigo-600 text-white shadow-lg";
       default:
-        return "bg-gray-100 text-gray-800";
+        return "bg-gradient-to-r from-slate-500 to-gray-600 text-white shadow-lg";
     }
   };
 
@@ -444,32 +444,45 @@ export const CommentQueue: React.FC = () => {
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <MessageCircle className="h-5 w-5" />
+    <Card className="bg-gradient-to-br from-white to-slate-50/30 border-0 shadow-xl backdrop-blur-sm">
+      <CardHeader className="bg-gradient-to-r from-blue-50 to-indigo-50 border-b border-blue-100/50">
+        <CardTitle className="flex items-center gap-3 text-xl font-semibold bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">
+          <div className="p-2 rounded-lg bg-gradient-to-br from-blue-500 to-indigo-600 text-white shadow-lg">
+            <MessageCircle className="h-5 w-5" />
+          </div>
           Comment Approval Queue
         </CardTitle>
-        <CardDescription>
-          {comments.length} comments waiting for approval
+        <CardDescription className="text-slate-600 font-medium">
+          {comments.length} {comments.length === 1 ? 'comment' : 'comments'} waiting for approval
         </CardDescription>
       </CardHeader>
       <CardContent>
         {comments.length === 0 ? (
-          <p className="text-gray-500 text-center py-8">No comments in queue</p>
+          <div className="text-center py-12">
+            <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-gradient-to-br from-slate-100 to-slate-200 flex items-center justify-center">
+              <MessageCircle className="h-8 w-8 text-slate-400" />
+            </div>
+            <p className="text-slate-500 text-lg font-medium">No comments in queue</p>
+            <p className="text-slate-400 text-sm mt-2">New comments will appear here when they're ready for approval</p>
+          </div>
         ) : (
-          <div className="space-y-4">
-            {comments.map((comment) => (
-              <Card key={comment.id} className="border-l-4 border-l-blue-500">
-                <CardContent className="pt-6">
+          <div className="space-y-6">
+            {comments.map((comment, index) => (
+              <Card 
+                key={comment.id} 
+                className="group relative overflow-hidden bg-gradient-to-br from-white via-slate-50/50 to-white border-0 shadow-lg hover:shadow-2xl transition-all duration-500 hover:scale-[1.02] backdrop-blur-sm"
+              >
+                <div className="absolute inset-0 bg-gradient-to-r from-blue-500/5 via-purple-500/5 to-indigo-500/5 opacity-0 group-hover:opacity-100 transition-all duration-500" />
+                <div className="absolute left-0 top-0 h-full w-1.5 bg-gradient-to-b from-blue-500 via-purple-500 to-indigo-600 group-hover:w-2 transition-all duration-300" />
+                <CardContent className="relative pt-6 z-10">
                   <div className="flex items-start justify-between mb-4">
                     <div className="flex-1">
                       <div className="flex items-center gap-2 mb-2">
-                        <Badge className={getPostTypeColor(comment.post_type)}>
+                        <Badge className={`${getPostTypeColor(comment.post_type)} font-semibold px-3 py-1 rounded-full shadow-sm border-0`}>
                           {comment.post_type.toUpperCase()}
                         </Badge>
                         {comment.post_author && (
-                          <span className="text-sm text-gray-600">
+                          <span className="text-sm font-medium text-slate-600 bg-slate-100 px-3 py-1 rounded-full">
                             by {comment.post_author}
                           </span>
                         )}
@@ -550,27 +563,30 @@ export const CommentQueue: React.FC = () => {
                         );
                       })()}
 
-                      <div className="mb-3">
-                        <h4 className="font-medium text-sm text-gray-700 mb-1">
-                          Original Post:
+                      <div className="mb-4">
+                        <h4 className="font-semibold text-sm text-slate-700 mb-3 flex items-center gap-2">
+                          <div className="w-1 h-4 bg-gradient-to-b from-blue-500 to-indigo-600 rounded-full"></div>
+                          Original Post
                         </h4>
-                        <p className="text-sm text-gray-600 bg-gray-50 p-2 rounded">
+                        <p className="text-sm leading-relaxed text-slate-700 bg-gradient-to-r from-slate-50 to-white p-4 rounded-lg border border-slate-200/50 shadow-sm">
                           {comment.post_text}
                         </p>
                       </div>
 
-                      <div className="mb-3">
-                        <div className="mb-1">
-                          <h4 className="font-medium text-sm text-gray-700">
-                            Generated Comment:
+                      <div className="mb-4">
+                        <div className="mb-3">
+                          <h4 className="font-semibold text-sm text-slate-700 flex items-center gap-2">
+                            <div className="w-1 h-4 bg-gradient-to-b from-purple-500 to-indigo-600 rounded-full"></div>
+                            Generated Comment
                           </h4>
                         </div>
                         {editingComment === comment.id ? (
                           <div className="space-y-3">
                             {/* Template Selection */}
-                            <div>
-                              <label className="text-xs font-medium text-gray-600 block mb-1">
-                                Choose Template (Optional):
+                            <div className="mb-4">
+                              <label className="text-sm font-semibold text-slate-700 block mb-2 flex items-center gap-2">
+                                <div className="w-1 h-3 bg-gradient-to-b from-emerald-500 to-green-600 rounded-full"></div>
+                                Choose Template (Optional)
                               </label>
                               <Select
                                 value={selectedTemplate}
@@ -608,11 +624,12 @@ export const CommentQueue: React.FC = () => {
                             </div>
 
                             {/* Integrated Comment Composer */}
-                            <div className="border rounded-lg bg-background/50">
-                              <div className="p-3 border-b">
-                                <div className="flex items-center justify-between mb-2">
-                                  <label className="text-sm font-medium text-gray-700">
-                                    Custom Comment:
+                            <div className="border-0 rounded-xl bg-gradient-to-br from-white via-slate-50/50 to-white shadow-lg backdrop-blur-sm overflow-hidden">
+                              <div className="p-4 border-b border-slate-200/50 bg-gradient-to-r from-white to-slate-50/30">
+                                <div className="flex items-center justify-between mb-3">
+                                  <label className="text-sm font-semibold text-slate-700 flex items-center gap-2">
+                                    <div className="w-1 h-3 bg-gradient-to-b from-blue-500 to-indigo-600 rounded-full"></div>
+                                    Custom Comment
                                   </label>
                                   {analyzingText[comment.id] && (
                                     <div className="flex items-center gap-1 text-xs text-muted-foreground">
@@ -624,21 +641,25 @@ export const CommentQueue: React.FC = () => {
 
                                 {/* Real-time detected categories */}
                                 {smartMode[comment.id] && realTimeCategories[comment.id]?.length > 0 && (
-                                  <div className="mb-2 flex items-center gap-2 flex-wrap">
-                                    <span className="text-xs font-medium text-muted-foreground">Live detected:</span>
-                                    {realTimeCategories[comment.id].map(category => (
-                                      <Badge key={category} variant="secondary" className="text-xs">
-                                        <Sparkles className="h-2 w-2 mr-1" />
-                                        {category}
-                                      </Badge>
-                                    ))}
+                                  <div className="mb-3 p-3 bg-gradient-to-r from-purple-50/50 to-indigo-50/50 rounded-lg border border-purple-200/30">
+                                    <div className="flex items-center gap-2 mb-2">
+                                      <span className="text-sm font-semibold text-purple-700">Live Detected Categories:</span>
+                                    </div>
+                                    <div className="flex flex-wrap gap-2">
+                                      {realTimeCategories[comment.id].map(category => (
+                                        <Badge key={category} className="text-xs bg-gradient-to-r from-purple-500 to-indigo-600 text-white border-0 shadow-sm px-2 py-1 rounded-full font-medium">
+                                          <Sparkles className="h-3 w-3 mr-1" />
+                                          {category}
+                                        </Badge>
+                                      ))}
+                                    </div>
                                   </div>
                                 )}
 
                                 <Textarea
                                   value={editedText}
                                   onChange={(e) => handleTextEdit(comment.id, e.target.value)}
-                                  className="min-h-[120px] resize-none"
+                                  className="min-h-[120px] resize-none border-0 bg-white/80 backdrop-blur-sm shadow-inner rounded-lg focus:ring-2 focus:ring-blue-500/20 focus:bg-white transition-all duration-200"
                                   placeholder="Write your comment here... 
 
 💡 Tip: Enable Smart Mode for real-time category detection and image suggestions!"
@@ -647,10 +668,12 @@ export const CommentQueue: React.FC = () => {
 
                               {/* Selected Images Preview - Integrated within composer */}
                               {(selectedImages[comment.id] || []).length > 0 && (
-                                <div className="px-3 py-2 border-b bg-gray-50/50">
-                                  <div className="flex items-center gap-2 mb-2">
-                                    <Image className="h-4 w-4 text-gray-600" />
-                                    <span className="text-sm font-medium text-gray-700">
+                                <div className="px-4 py-3 border-b border-slate-200/50 bg-gradient-to-r from-blue-50/30 to-indigo-50/30">
+                                  <div className="flex items-center gap-3 mb-3">
+                                    <div className="p-1.5 rounded-lg bg-gradient-to-r from-blue-500 to-indigo-600 text-white">
+                                      <Image className="h-4 w-4" />
+                                    </div>
+                                    <span className="text-sm font-semibold text-slate-700">
                                       Attached Images ({(selectedImages[comment.id] || []).length})
                                     </span>
                                   </div>
@@ -660,7 +683,7 @@ export const CommentQueue: React.FC = () => {
                                         <img
                                           src={image.startsWith('http') ? image : `http://localhost:8000/${image}`}
                                           alt={image}
-                                          className="w-16 h-16 object-cover rounded border border-gray-200 bg-white"
+                                          className="w-16 h-16 object-cover rounded-lg border-2 border-white shadow-md bg-white group-hover:scale-105 transition-transform duration-200"
                                           onError={(e) => {
                                             const target = e.target as HTMLImageElement;
                                             target.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='64' height='64' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' fill='%23f3f4f6'/%3E%3Ctext x='32' y='36' font-family='Arial' font-size='8' fill='%23666' text-anchor='middle'%3ENo Image%3C/text%3E%3C/svg%3E";
@@ -670,7 +693,7 @@ export const CommentQueue: React.FC = () => {
                                           variant="destructive"
                                           size="sm"
                                           onClick={() => handleImageSelect(comment.id, image)}
-                                          className="absolute -top-1 -right-1 h-5 w-5 p-0 opacity-0 group-hover:opacity-100 transition-opacity text-xs"
+                                          className="absolute -top-1 -right-1 h-6 w-6 p-0 opacity-0 group-hover:opacity-100 transition-all duration-200 text-xs bg-red-500 hover:bg-red-600 shadow-lg rounded-full border-2 border-white"
                                         >
                                           ×
                                         </Button>
@@ -682,23 +705,27 @@ export const CommentQueue: React.FC = () => {
 
                               {/* Inline Expandable Gallery */}
                               {showImageSelector[comment.id] && (
-                                <div className="border-b">
-                                  <div className="p-3">
-                                    <div className="flex items-center justify-between mb-3">
-                                      <div className="flex items-center gap-3">
-                                        <h5 className="font-medium text-sm text-gray-700">Add Images</h5>
+                                <div className="border-b border-slate-200/50 bg-gradient-to-br from-slate-50/50 to-white">
+                                  <div className="p-4">
+                                    <div className="flex items-center justify-between mb-4">
+                                      <div className="flex items-center gap-4">
+                                        <h5 className="font-semibold text-sm text-slate-700 flex items-center gap-2">
+                                          <div className="w-1 h-4 bg-gradient-to-b from-blue-500 to-indigo-600 rounded-full"></div>
+                                          Add Images
+                                        </h5>
                                         
                                         {/* Smart Mode Toggle - Now in gallery */}
-                                        <div className="flex items-center gap-2">
+                                        <div className="flex items-center gap-2 px-3 py-2 bg-gradient-to-r from-purple-50 to-indigo-50 rounded-lg border border-purple-200/50">
                                           <Switch
                                             id={`smart-mode-${comment.id}`}
                                             checked={smartMode[comment.id] || false}
                                             onCheckedChange={(checked) => toggleSmartMode(comment.id, checked)}
                                             disabled={loadingCategories[comment.id]}
+                                            className="data-[state=checked]:bg-gradient-to-r data-[state=checked]:from-purple-500 data-[state=checked]:to-indigo-600"
                                           />
-                                          <Label htmlFor={`smart-mode-${comment.id}`} className="text-xs cursor-pointer">
-                                            <span className="flex items-center gap-1">
-                                              <Sparkles className="h-3 w-3" />
+                                          <Label htmlFor={`smart-mode-${comment.id}`} className="text-sm font-medium cursor-pointer text-slate-700">
+                                            <span className="flex items-center gap-2">
+                                              <Sparkles className="h-4 w-4 text-purple-500" />
                                               Smart Mode
                                             </span>
                                           </Label>
@@ -706,7 +733,7 @@ export const CommentQueue: React.FC = () => {
                                         
                                         {/* Category count badge - Combined stored and real-time */}
                                         {loadingCategories[comment.id] ? (
-                                          <Badge variant="outline" className="text-xs">
+                                          <Badge className="text-xs bg-gradient-to-r from-blue-100 to-indigo-100 text-blue-700 border-0 shadow-sm animate-pulse">
                                             Loading...
                                           </Badge>
                                         ) : (() => {
@@ -717,13 +744,13 @@ export const CommentQueue: React.FC = () => {
                                           
                                           if (allCategories.length > 0) {
                                             return (
-                                              <Badge variant="secondary" className="text-xs">
-                                                {allCategories.length} categories
+                                              <Badge className="text-xs bg-gradient-to-r from-emerald-500 to-green-600 text-white border-0 shadow-lg px-3 py-1 rounded-full font-semibold">
+                                                {allCategories.length} {allCategories.length === 1 ? 'category' : 'categories'}
                                               </Badge>
                                             );
                                           } else if (smartMode[comment.id]) {
                                             return (
-                                              <Badge variant="outline" className="text-xs text-muted-foreground">
+                                              <Badge className="text-xs bg-gradient-to-r from-slate-100 to-gray-100 text-slate-600 border-0 shadow-sm px-3 py-1 rounded-full">
                                                 No categories detected
                                               </Badge>
                                             );
@@ -741,7 +768,6 @@ export const CommentQueue: React.FC = () => {
                                         if (smartMode[comment.id] && allCategories.length > 0) {
                                           return (
                                             <Button
-                                              variant="outline"
                                               size="sm"
                                               onClick={() => {
                                                 const suggested = getSuggestedImages(allCategories, imagePacks, 2);
@@ -750,9 +776,9 @@ export const CommentQueue: React.FC = () => {
                                                   [comment.id]: suggested
                                                 }));
                                               }}
-                                              className="text-xs"
+                                              className="text-sm bg-gradient-to-r from-purple-500 to-indigo-600 hover:from-purple-600 hover:to-indigo-700 text-white shadow-lg border-0 px-4 py-2 rounded-lg font-medium transition-all duration-200 hover:scale-105 hover:shadow-xl"
                                             >
-                                              <Sparkles className="h-3 w-3 mr-1" />
+                                              <Sparkles className="h-4 w-4 mr-2" />
                                               Auto-Select
                                             </Button>
                                           );
@@ -779,18 +805,18 @@ export const CommentQueue: React.FC = () => {
                               )}
 
                               {/* Integrated Action Bar */}
-                              <div className="p-3 flex items-center justify-between bg-gray-50/30">
+                              <div className="p-4 flex items-center justify-between bg-gradient-to-r from-slate-50/50 to-white border-t border-slate-200/50">
                                 <div className="flex items-center gap-2">
                                   <Button
                                     variant="ghost"
                                     size="sm"
                                     onClick={() => toggleImageSelector(comment.id)}
-                                    className="h-8 px-3 text-gray-600 hover:text-gray-800"
+                                    className="h-9 px-4 text-slate-600 hover:text-slate-800 hover:bg-gradient-to-r hover:from-slate-100 hover:to-slate-50 rounded-lg transition-all duration-200 border border-transparent hover:border-slate-200"
                                   >
-                                    <Image className="h-4 w-4 mr-1" />
+                                    <Image className="h-4 w-4 mr-2" />
                                     {showImageSelector[comment.id] ? 'Hide' : 'Add'} Images
                                     {(selectedImages[comment.id] || []).length > 0 && (
-                                      <span className="ml-1 text-xs bg-blue-100 text-blue-800 px-1 rounded">
+                                      <span className="ml-2 text-xs bg-gradient-to-r from-blue-500 to-indigo-600 text-white px-2 py-0.5 rounded-full font-medium shadow-sm">
                                         {(selectedImages[comment.id] || []).length}
                                       </span>
                                     )}
@@ -800,18 +826,18 @@ export const CommentQueue: React.FC = () => {
                                 <div className="flex items-center gap-2">
                                   <Button
                                     size="sm"
-                                    variant="outline"
+                                    variant="ghost"
                                     onClick={cancelEditing}
-                                    className="h-8"
+                                    className="h-9 px-4 text-slate-600 hover:text-slate-800 hover:bg-gradient-to-r hover:from-slate-100 hover:to-slate-50 rounded-lg transition-all duration-200 border border-transparent hover:border-slate-200"
                                   >
                                     Cancel
                                   </Button>
                                   <Button
                                     size="sm"
                                     onClick={() => handleApprove(comment.id)}
-                                    className="bg-green-600 hover:bg-green-700 h-8"
+                                    className="bg-gradient-to-r from-emerald-500 to-green-600 hover:from-emerald-600 hover:to-green-700 text-white h-9 px-6 shadow-lg border-0 rounded-lg font-medium transition-all duration-200 hover:scale-105 hover:shadow-xl"
                                   >
-                                    <CheckCircle className="h-4 w-4 mr-1" />
+                                    <CheckCircle className="h-4 w-4 mr-2" />
                                     Post to Facebook
                                   </Button>
                                 </div>
@@ -819,60 +845,60 @@ export const CommentQueue: React.FC = () => {
                             </div>
                           </div>
                         ) : (
-                          <p className="text-sm bg-blue-50 p-2 rounded">
-                            {comment.generated_comment}
-                          </p>
+                          <div className="bg-gradient-to-r from-blue-50/50 to-indigo-50/50 p-4 rounded-lg border border-blue-200/30">
+                            <p className="text-sm leading-relaxed text-slate-700 font-medium">
+                              {comment.generated_comment}
+                            </p>
+                          </div>
                         )}
                       </div>
 
-                      <div className="flex items-center gap-2 text-xs text-gray-500">
-                        <span>
-                          Created:{" "}
-                          {new Date(comment.created_at).toLocaleString()}
+                      <div className="flex items-center gap-3 text-xs text-slate-500 bg-slate-50/50 px-3 py-2 rounded-lg">
+                        <span className="font-medium">
+                          Created: {new Date(comment.created_at).toLocaleString()}
                         </span>
                         {comment.post_engagement && (
-                          <span>• {comment.post_engagement}</span>
+                          <span className="px-2 py-1 bg-slate-200/50 rounded-full">• {comment.post_engagement}</span>
                         )}
                       </div>
                     </div>
 
-                    <div className="flex flex-col gap-2 ml-4">
+                    <div className="flex flex-col gap-3 ml-6">
                       <Button
                         size="sm"
-                        variant="outline"
                         onClick={() => window.open(comment.post_url, "_blank")}
+                        className="bg-gradient-to-r from-slate-100 to-slate-200 hover:from-slate-200 hover:to-slate-300 text-slate-700 border-0 shadow-sm hover:shadow-md transition-all duration-200 rounded-lg font-medium"
                       >
-                        <ExternalLink className="h-4 w-4 mr-1" />
+                        <ExternalLink className="h-4 w-4 mr-2" />
                         View Post
                       </Button>
 
                       {editingComment !== comment.id && (
-                        <div className="flex gap-1">
+                        <div className="flex gap-2">
                           <Button
                             size="sm"
                             onClick={() => startEditing(comment)}
-                            variant="outline"
+                            className="bg-gradient-to-r from-blue-100 to-indigo-100 hover:from-blue-200 hover:to-indigo-200 text-blue-700 border-0 shadow-sm hover:shadow-md transition-all duration-200 rounded-lg font-medium"
                           >
-                            <Edit className="h-4 w-4 mr-1" />
+                            <Edit className="h-4 w-4 mr-2" />
                             Edit
                           </Button>
                           <Button
                             size="sm"
                             onClick={() => handleApprove(comment.id)}
-                            className="bg-green-600 hover:bg-green-700"
+                            className="bg-gradient-to-r from-emerald-500 to-green-600 hover:from-emerald-600 hover:to-green-700 text-white shadow-lg border-0 rounded-lg font-medium transition-all duration-200 hover:scale-105 hover:shadow-xl"
                           >
-                            <CheckCircle className="h-4 w-4 mr-1" />
+                            <CheckCircle className="h-4 w-4 mr-2" />
                             Post to Facebook
                           </Button>
                           <Button
                             size="sm"
-                            variant="outline"
                             onClick={() =>
                               handleReject(comment.id, "Rejected by user")
                             }
-                            className="text-red-600 border-red-600 hover:bg-red-50"
+                            className="bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 text-white shadow-lg border-0 rounded-lg font-medium transition-all duration-200 hover:scale-105 hover:shadow-xl"
                           >
-                            <XCircle className="h-4 w-4 mr-1" />
+                            <XCircle className="h-4 w-4 mr-2" />
                             Reject
                           </Button>
                         </div>

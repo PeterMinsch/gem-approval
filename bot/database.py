@@ -930,6 +930,7 @@ class BotDatabase:
                 WHERE id = ?
             """, values)
             
+            conn.commit()  # Explicitly commit the transaction
             return cursor.rowcount > 0
     
     def get_fb_accounts(self) -> List[Dict[str, Any]]:

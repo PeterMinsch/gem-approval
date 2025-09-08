@@ -559,7 +559,8 @@ urllib3_logger.setLevel(logging.WARNING)
 # Legacy function wrappers for backward compatibility
 def classify_post(text: str) -> str:
     """Legacy wrapper for backward compatibility"""
-    classifier = PostClassifier(CONFIG)
+    from config_loader import get_dynamic_config
+    classifier = PostClassifier(get_dynamic_config())
     result = classifier.classify_post(text)
     return result.post_type
 
@@ -1001,7 +1002,8 @@ class FacebookAICommentBot:
         self.driver = None
         
         # Initialize enhanced systems (existing)
-        self.classifier = PostClassifier(self.config)
+        from config_loader import get_dynamic_config
+        self.classifier = PostClassifier(get_dynamic_config())
         self.comment_generator = ExternalCommentGenerator(self.config, database=db)
         self.duplicate_detector = DuplicateDetector(self.config)
         
@@ -2594,7 +2596,8 @@ class FacebookAICommentBot:
                                 
                                 # Classify the post type
                                 logger.debug("Classifying post type...")
-                                classifier = PostClassifier(self.config)
+                                from config_loader import get_dynamic_config
+                                classifier = PostClassifier(get_dynamic_config())
                                 classification = classifier.classify_post(post_text)
                                 post_type = classification.category
                                 logger.debug(f"Post classified as: {post_type} (confidence: {classification.confidence:.2f})")
