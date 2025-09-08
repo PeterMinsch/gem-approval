@@ -1909,6 +1909,100 @@ async def bot_callback(data: Dict[str, Any]):
         logger.error(f"Error processing bot callback: {e}")
         raise HTTPException(status_code=500, detail="Failed to process callback")
 
+# Comment Composer API Endpoints
+
+@app.post("/api/analyze-text")
+async def analyze_text(request: Dict[str, Any]):
+    """Analyze text in real-time for category detection"""
+    try:
+        text = request.get("text", "")
+        
+        if not text or len(text.strip()) < 5:
+            return {
+                "success": True,
+                "text": text,
+                "categories": []
+            }
+        
+        # Import classifier
+        from classifier import PostClassifier
+        from bravo_config import CONFIG
+        
+        classifier = PostClassifier(CONFIG)
+        
+        # Perform real classification analysis on the text
+        real_classification = classifier.classify_post(text)
+        categories = classifier.detect_jewelry_categories(text, real_classification)
+        
+        logger.info(f"🔍 Classification result: type='{real_classification.post_type}', score={real_classification.confidence_score:.1f}")
+        logger.info(f"🏷️  Keyword matches: {real_classification.keyword_matches}")
+        
+        logger.info(f"📋 Text analysis for '{text[:50]}...' detected categories: {categories}")
+        
+        return {
+            "success": True,
+            "text": text,
+            "categories": categories or []
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error analyzing text: {e}")
+        return {
+            "success": False,
+            "text": request.get("text", ""),
+            "categories": [],
+            "error": str(e)
+        }
+
+@app.post("/api/comments/send")
+async def send_comment(request: Dict[str, Any]):
+    """Send a new comment with images (for CommentComposer)"""
+    try:
+        text = request.get("text", "").strip()
+        images = request.get("images", [])
+        master_image = request.get("master_image")
+        
+        if not text:
+            raise HTTPException(status_code=400, detail="Comment text is required")
+        
+        # For now, we'll just store the comment in the database
+        # Later you can integrate with your Facebook posting logic
+        
+        # Create a mock post URL for the composed comment
+        import uuid
+        comment_id = str(uuid.uuid4())[:8]
+        mock_post_url = f"https://facebook.com/composed-comment/{comment_id}"
+        
+        # Store in database using existing function
+        queue_id = add_comment_to_queue(
+            post_url=mock_post_url,
+            post_text=f"User composed comment - {text[:50]}...",
+            generated_comment=text,
+            post_type="COMPOSED",
+            post_images=json.dumps(images) if images else None,
+            post_author="User",
+            detected_categories=None  # Categories are already analyzed in real-time
+        )
+        
+        if queue_id:
+            logger.info(f"💬 New composed comment stored: {queue_id} with {len(images)} images")
+            
+            return {
+                "success": True,
+                "comment_id": queue_id,
+                "message": "Comment sent successfully",
+                "images_count": len(images),
+                "master_image": master_image
+            }
+        else:
+            raise HTTPException(status_code=500, detail="Failed to store comment")
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error sending comment: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to send comment: {str(e)}")
+
 @app.on_event("startup")
 async def startup_event():
     """Handle application startup tasks"""

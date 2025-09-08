@@ -177,57 +177,93 @@ class PostExtractor:
     
     def extract_text_from_elements(self, elements: List[WebElement], method_name: str) -> str:
         """
-        Extract and clean text from elements - IMPROVED: Better filtering for post vs comment text
+        Extract and clean text from elements - ALTERNATIVE FIX: Smart post vs comment detection
         
         Args:
             elements: List of WebElements
             method_name: Name of extraction method for logging
             
         Returns:
-            Cleaned text or empty string
+            Cleaned text or empty string (prioritizes actual post content)
         """
-        texts = []
+        candidate_texts = []
+        
+        # Stronger comment indicators
         comment_indicators = [
-            'reply', 'replies', 'like', 'likes', 'react', 'share', 'shares',
+            'reply', 'replies', 'like this', 'likes', 'react', 'share', 'shares',
             'ago', 'minute', 'minutes', 'hour', 'hours', 'day', 'days',
-            'comment by', 'commented', 'see more', 'hide', 'translate'
+            'comment by', 'commented', 'see more', 'hide', 'translate',
+            'write a comment', 'most relevant', 'view', 'views', 'see all'
         ]
         
-        for element in elements:
+        # Post-like indicators (things that suggest this is original content)
+        post_indicators = [
+            'looking for', 'need help', 'can anyone', 'does anyone', 'selling',
+            'custom', 'handmade', 'design', 'project', 'finished', 'completed',
+            'price', 'quote', 'estimate', 'available', 'contact me'
+        ]
+        
+        for i, element in enumerate(elements):
             try:
                 text = element.text.strip()
-                if text and len(text) > 10:
-                    # Filter out obvious comment-related text
-                    text_lower = text.lower()
-                    is_comment_like = any(indicator in text_lower for indicator in comment_indicators)
+                if not text or len(text) < 10:
+                    continue
                     
-                    # Skip very short texts that are likely UI elements
-                    if len(text) < 20 and any(word in text_lower for word in ['like', 'reply', 'share']):
-                        continue
-                        
-                    # Prefer longer, more substantial text that doesn't look like comments
-                    if not is_comment_like or len(text) > 50:
-                        texts.append(text)
-                        
-                        # IMPORTANT: For post extraction, take the first good text we find
-                        # This prevents comment text from being included
-                        if len(text) > 30 and not is_comment_like:
-                            logger.info(f"Successfully extracted post text using {method_name}: {text[:100]}...")
-                            return text
-                            
+                text_lower = text.lower()
+                
+                # Calculate scores for post vs comment likelihood
+                comment_score = sum(1 for indicator in comment_indicators if indicator in text_lower)
+                post_score = sum(1 for indicator in post_indicators if indicator in text_lower)
+                
+                # Element position matters - earlier elements more likely to be post
+                position_bonus = max(0, 10 - i)  # First element gets +10, second +9, etc.
+                
+                # Length factor - posts are often longer than simple comments
+                length_factor = min(len(text) / 50, 5)  # Cap at 5 points for very long text
+                
+                # Check if this looks like a timestamp or reaction count
+                is_metadata = any(pattern in text_lower for pattern in [
+                    'january', 'february', 'march', 'april', 'may', 'june',
+                    'july', 'august', 'september', 'october', 'november', 'december',
+                    '2023', '2024', '2025', 'am', 'pm'
+                ]) and len(text) < 50
+                
+                # Skip obvious metadata
+                if is_metadata:
+                    continue
+                
+                # Calculate final score
+                final_score = position_bonus + length_factor + post_score - (comment_score * 2)
+                
+                candidate_texts.append({
+                    'text': text,
+                    'score': final_score,
+                    'length': len(text),
+                    'position': i,
+                    'comment_score': comment_score,
+                    'post_score': post_score
+                })
+                
+                logger.debug(f"Text candidate {i}: score={final_score:.1f}, length={len(text)}, comment_indicators={comment_score}, post_indicators={post_score}")
+                
             except Exception as e:
-                logger.debug(f"Failed to extract text from element: {e}")
+                logger.debug(f"Failed to extract text from element {i}: {e}")
         
-        # If we have multiple texts, prefer the longest one that doesn't look like a comment
-        if texts:
-            # Sort by length descending, then filter out comment-like texts
-            texts_filtered = [t for t in texts if not any(ind in t.lower() for ind in comment_indicators[:5])]
-            best_text = texts_filtered[0] if texts_filtered else texts[0]
-            
-            logger.info(f"Successfully extracted text using {method_name}: {best_text[:100]}...")
-            return best_text
+        if not candidate_texts:
+            return ""
         
-        return ""
+        # Sort by score descending, then by position ascending (prefer earlier elements)
+        candidate_texts.sort(key=lambda x: (-x['score'], x['position']))
+        
+        # Log top candidates for debugging
+        for i, candidate in enumerate(candidate_texts[:3]):
+            logger.debug(f"Top candidate {i+1}: score={candidate['score']:.1f}, text='{candidate['text'][:60]}...'")
+        
+        # Return the highest scoring text
+        best_candidate = candidate_texts[0]
+        logger.info(f"Selected text using {method_name} (score={best_candidate['score']:.1f}): {best_candidate['text'][:100]}...")
+        
+        return best_candidate['text']
     
     def get_post_author(self) -> str:
         """

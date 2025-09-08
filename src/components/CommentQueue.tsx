@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
+import { debounce } from "lodash";
 import { Button } from "./ui/button";
 import {
   Card,
@@ -78,6 +79,9 @@ export const CommentQueue: React.FC = () => {
   const [smartMode, setSmartMode] = useState<Record<string, boolean>>({});
   const [detectedCategories, setDetectedCategories] = useState<Record<string, string[]>>({});
   const [loadingCategories, setLoadingCategories] = useState<Record<string, boolean>>({});
+  // Real-time text analysis state
+  const [analyzingText, setAnalyzingText] = useState<Record<string, boolean>>({});
+  const [realTimeCategories, setRealTimeCategories] = useState<Record<string, string[]>>({});
 
   useEffect(() => {
     fetchComments();
@@ -303,13 +307,66 @@ export const CommentQueue: React.FC = () => {
   const toggleSmartMode = (commentId: string, enabled: boolean) => {
     setSmartMode(prev => ({ ...prev, [commentId]: enabled }));
     
-    // Auto-select suggested images when enabling smart mode
-    if (enabled && detectedCategories[commentId]?.length > 0) {
-      const suggested = getSuggestedImages(detectedCategories[commentId], imagePacks, 2);
-      setSelectedImages(prev => ({
-        ...prev,
-        [commentId]: suggested
-      }));
+    if (enabled) {
+      // Trigger analysis on existing edited text if available
+      if (editingComment === commentId && editedText.length >= 10) {
+        analyzeEditedText(commentId, editedText);
+      }
+      
+      // Auto-select suggested images when enabling smart mode
+      if (detectedCategories[commentId]?.length > 0) {
+        const suggested = getSuggestedImages(detectedCategories[commentId], imagePacks, 2);
+        setSelectedImages(prev => ({
+          ...prev,
+          [commentId]: suggested
+        }));
+      }
+    } else {
+      // Clear real-time categories when disabling smart mode
+      setRealTimeCategories(prev => ({ ...prev, [commentId]: [] }));
+    }
+  };
+
+  // Real-time text analysis for edited comments
+  const analyzeEditedText = useCallback(
+    debounce(async (commentId: string, text: string) => {
+      if (!text || text.length < 10) {
+        setRealTimeCategories(prev => ({ ...prev, [commentId]: [] }));
+        return;
+      }
+
+      setAnalyzingText(prev => ({ ...prev, [commentId]: true }));
+      try {
+        const response = await fetch('http://localhost:8000/api/analyze-text', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text })
+        });
+        
+        if (response.ok) {
+          const data = await response.json();
+          setRealTimeCategories(prev => ({ 
+            ...prev, 
+            [commentId]: data.categories || [] 
+          }));
+          console.log('[DEBUG] Real-time analysis for comment', commentId, ':', data.categories);
+        }
+      } catch (error) {
+        console.error('Real-time text analysis failed:', error);
+        setRealTimeCategories(prev => ({ ...prev, [commentId]: [] }));
+      } finally {
+        setAnalyzingText(prev => ({ ...prev, [commentId]: false }));
+      }
+    }, 800),
+    []
+  );
+
+  const handleTextEdit = (commentId: string, text: string) => {
+    setEditedText(text);
+    
+    // Trigger real-time analysis if smart mode is enabled
+    if (smartMode[commentId]) {
+      analyzeEditedText(commentId, text);
     }
   };
 
@@ -503,131 +560,14 @@ export const CommentQueue: React.FC = () => {
                       </div>
 
                       <div className="mb-3">
-                        <div className="flex items-center justify-between mb-1">
+                        <div className="mb-1">
                           <h4 className="font-medium text-sm text-gray-700">
                             Generated Comment:
                           </h4>
-                          {editingComment === comment.id && (
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() => toggleImageSelector(comment.id)}
-                              className="h-7 px-2"
-                            >
-                              <Image className="h-3 w-3 mr-1" />
-                              Images ({(selectedImages[comment.id] || []).length})
-                            </Button>
-                          )}
                         </div>
                         {editingComment === comment.id ? (
                           <div className="space-y-3">
-                            {/* Image Gallery - New Visual Interface */}
-                            {showImageSelector[comment.id] && (
-                              <div className="border rounded-lg bg-background/50 backdrop-blur-sm">
-                                <div className="border-b p-3">
-                                  <div className="flex items-center justify-between">
-                                    <div className="flex items-center gap-3">
-                                      <h5 className="font-semibold text-sm">Select Images</h5>
-                                      
-                                      {/* Smart Mode Toggle */}
-                                      <div className="flex items-center gap-2">
-                                        <Switch
-                                          id={`smart-mode-${comment.id}`}
-                                          checked={smartMode[comment.id] || false}
-                                          onCheckedChange={(checked) => toggleSmartMode(comment.id, checked)}
-                                          disabled={loadingCategories[comment.id]}
-                                        />
-                                        <Label htmlFor={`smart-mode-${comment.id}`} className="text-xs cursor-pointer">
-                                          <span className="flex items-center gap-1">
-                                            <Sparkles className="h-3 w-3" />
-                                            Smart Mode
-                                          </span>
-                                        </Label>
-                                      </div>
-                                      
-                                      {/* Category count */}
-                                      {loadingCategories[comment.id] ? (
-                                        <Badge variant="outline" className="text-xs">
-                                          Loading categories...
-                                        </Badge>
-                                      ) : detectedCategories[comment.id]?.length > 0 ? (
-                                        <Badge variant="secondary" className="text-xs">
-                                          {detectedCategories[comment.id].length} categories detected
-                                        </Badge>
-                                      ) : (
-                                        <Badge variant="outline" className="text-xs text-muted-foreground">
-                                          No categories detected
-                                        </Badge>
-                                      )}
-                                    </div>
-                                    
-                                    {/* Auto-select button */}
-                                    {smartMode[comment.id] && detectedCategories[comment.id]?.length > 0 && (
-                                      <Button
-                                        variant="outline"
-                                        size="sm"
-                                        onClick={() => {
-                                          const suggested = getSuggestedImages(detectedCategories[comment.id], imagePacks, 2);
-                                          setSelectedImages(prev => ({
-                                            ...prev,
-                                            [comment.id]: suggested
-                                          }));
-                                        }}
-                                        className="text-xs"
-                                      >
-                                        <Sparkles className="h-3 w-3 mr-1" />
-                                        Auto-Select Best
-                                      </Button>
-                                    )}
-                                  </div>
-                                </div>
-                                
-                                <div className="p-3">
-                                  <ImageGallery
-                                    categories={smartMode[comment.id] ? (detectedCategories[comment.id] || []) : []}
-                                    imagePacks={imagePacks}
-                                    selectedImages={selectedImages[comment.id] || []}
-                                    onImageSelect={(filename) => handleImageSelect(comment.id, filename)}
-                                    onBulkSelect={(filenames) => handleBulkImageSelect(comment.id, filenames)}
-                                    smartMode={smartMode[comment.id] || false}
-                                    loading={loadingCategories[comment.id] || false}
-                                  />
-                                </div>
-                              </div>
-                            )}
-                            
-                            {/* Selected Images Display */}
-                            {(selectedImages[comment.id] || []).length > 0 && (
-                              <div className="space-y-2">
-                                <h5 className="font-medium text-sm">Selected Images:</h5>
-                                <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-                                  {(selectedImages[comment.id] || []).map((image, index) => (
-                                    <div key={index} className="relative group">
-                                      <img
-                                        src={image.startsWith('http') ? image : `http://localhost:8000/${image}`}
-                                        alt={image}
-                                        className="w-full h-auto max-h-32 object-contain rounded border border-gray-200 bg-gray-50"
-                                        onError={(e) => {
-                                          const target = e.target as HTMLImageElement;
-                                          target.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='80' viewBox='0 0 120 80'%3E%3Crect width='120' height='80' fill='%23f3f4f6'/%3E%3Ctext x='60' y='45' font-family='Arial' font-size='10' fill='%23666' text-anchor='middle'%3ENo Image%3C/text%3E%3C/svg%3E";
-                                        }}
-                                      />
-                                      <Button
-                                        variant="destructive"
-                                        size="sm"
-                                        onClick={() => handleImageSelect(comment.id, image)}
-                                        className="absolute top-1 right-1 h-6 w-6 p-0 opacity-0 group-hover:opacity-100 transition-opacity"
-                                      >
-                                        ×
-                                      </Button>
-                                      <div className="mt-1 text-xs text-center text-muted-foreground truncate">
-                                        {image.split('/').pop()}
-                                      </div>
-                                    </div>
-                                  ))}
-                                </div>
-                              </div>
-                            )}
+                            {/* Template Selection */}
                             <div>
                               <label className="text-xs font-medium text-gray-600 block mb-1">
                                 Choose Template (Optional):
@@ -666,16 +606,216 @@ export const CommentQueue: React.FC = () => {
                                 </SelectContent>
                               </Select>
                             </div>
-                            <div>
-                              <label className="text-xs font-medium text-gray-600 block mb-1">
-                                Custom Comment:
-                              </label>
-                              <Textarea
-                                value={editedText}
-                                onChange={(e) => setEditedText(e.target.value)}
-                                className="min-h-[80px]"
-                                placeholder="Edit the comment or paste a template from above..."
-                              />
+
+                            {/* Integrated Comment Composer */}
+                            <div className="border rounded-lg bg-background/50">
+                              <div className="p-3 border-b">
+                                <div className="flex items-center justify-between mb-2">
+                                  <label className="text-sm font-medium text-gray-700">
+                                    Custom Comment:
+                                  </label>
+                                  {analyzingText[comment.id] && (
+                                    <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                                      <div className="animate-spin h-3 w-3 border border-primary border-t-transparent rounded-full"></div>
+                                      Analyzing...
+                                    </div>
+                                  )}
+                                </div>
+
+                                {/* Real-time detected categories */}
+                                {smartMode[comment.id] && realTimeCategories[comment.id]?.length > 0 && (
+                                  <div className="mb-2 flex items-center gap-2 flex-wrap">
+                                    <span className="text-xs font-medium text-muted-foreground">Live detected:</span>
+                                    {realTimeCategories[comment.id].map(category => (
+                                      <Badge key={category} variant="secondary" className="text-xs">
+                                        <Sparkles className="h-2 w-2 mr-1" />
+                                        {category}
+                                      </Badge>
+                                    ))}
+                                  </div>
+                                )}
+
+                                <Textarea
+                                  value={editedText}
+                                  onChange={(e) => handleTextEdit(comment.id, e.target.value)}
+                                  className="min-h-[120px] resize-none"
+                                  placeholder="Write your comment here... 
+
+💡 Tip: Enable Smart Mode for real-time category detection and image suggestions!"
+                                />
+                              </div>
+
+                              {/* Selected Images Preview - Integrated within composer */}
+                              {(selectedImages[comment.id] || []).length > 0 && (
+                                <div className="px-3 py-2 border-b bg-gray-50/50">
+                                  <div className="flex items-center gap-2 mb-2">
+                                    <Image className="h-4 w-4 text-gray-600" />
+                                    <span className="text-sm font-medium text-gray-700">
+                                      Attached Images ({(selectedImages[comment.id] || []).length})
+                                    </span>
+                                  </div>
+                                  <div className="flex gap-2 flex-wrap">
+                                    {(selectedImages[comment.id] || []).map((image, index) => (
+                                      <div key={index} className="relative group">
+                                        <img
+                                          src={image.startsWith('http') ? image : `http://localhost:8000/${image}`}
+                                          alt={image}
+                                          className="w-16 h-16 object-cover rounded border border-gray-200 bg-white"
+                                          onError={(e) => {
+                                            const target = e.target as HTMLImageElement;
+                                            target.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='64' height='64' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' fill='%23f3f4f6'/%3E%3Ctext x='32' y='36' font-family='Arial' font-size='8' fill='%23666' text-anchor='middle'%3ENo Image%3C/text%3E%3C/svg%3E";
+                                          }}
+                                        />
+                                        <Button
+                                          variant="destructive"
+                                          size="sm"
+                                          onClick={() => handleImageSelect(comment.id, image)}
+                                          className="absolute -top-1 -right-1 h-5 w-5 p-0 opacity-0 group-hover:opacity-100 transition-opacity text-xs"
+                                        >
+                                          ×
+                                        </Button>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Inline Expandable Gallery */}
+                              {showImageSelector[comment.id] && (
+                                <div className="border-b">
+                                  <div className="p-3">
+                                    <div className="flex items-center justify-between mb-3">
+                                      <div className="flex items-center gap-3">
+                                        <h5 className="font-medium text-sm text-gray-700">Add Images</h5>
+                                        
+                                        {/* Smart Mode Toggle - Now in gallery */}
+                                        <div className="flex items-center gap-2">
+                                          <Switch
+                                            id={`smart-mode-${comment.id}`}
+                                            checked={smartMode[comment.id] || false}
+                                            onCheckedChange={(checked) => toggleSmartMode(comment.id, checked)}
+                                            disabled={loadingCategories[comment.id]}
+                                          />
+                                          <Label htmlFor={`smart-mode-${comment.id}`} className="text-xs cursor-pointer">
+                                            <span className="flex items-center gap-1">
+                                              <Sparkles className="h-3 w-3" />
+                                              Smart Mode
+                                            </span>
+                                          </Label>
+                                        </div>
+                                        
+                                        {/* Category count badge - Combined stored and real-time */}
+                                        {loadingCategories[comment.id] ? (
+                                          <Badge variant="outline" className="text-xs">
+                                            Loading...
+                                          </Badge>
+                                        ) : (() => {
+                                          // Combine both stored and real-time categories for accurate count
+                                          const storedCats = detectedCategories[comment.id] || [];
+                                          const liveCats = realTimeCategories[comment.id] || [];
+                                          const allCategories = [...new Set([...storedCats, ...liveCats])]; // Unique categories
+                                          
+                                          if (allCategories.length > 0) {
+                                            return (
+                                              <Badge variant="secondary" className="text-xs">
+                                                {allCategories.length} categories
+                                              </Badge>
+                                            );
+                                          } else if (smartMode[comment.id]) {
+                                            return (
+                                              <Badge variant="outline" className="text-xs text-muted-foreground">
+                                                No categories detected
+                                              </Badge>
+                                            );
+                                          }
+                                          return null;
+                                        })()}
+                                      </div>
+                                      
+                                      {/* Auto-select button - Works with both stored and real-time categories */}
+                                      {(() => {
+                                        const storedCats = detectedCategories[comment.id] || [];
+                                        const liveCats = realTimeCategories[comment.id] || [];
+                                        const allCategories = [...new Set([...storedCats, ...liveCats])];
+                                        
+                                        if (smartMode[comment.id] && allCategories.length > 0) {
+                                          return (
+                                            <Button
+                                              variant="outline"
+                                              size="sm"
+                                              onClick={() => {
+                                                const suggested = getSuggestedImages(allCategories, imagePacks, 2);
+                                                setSelectedImages(prev => ({
+                                                  ...prev,
+                                                  [comment.id]: suggested
+                                                }));
+                                              }}
+                                              className="text-xs"
+                                            >
+                                              <Sparkles className="h-3 w-3 mr-1" />
+                                              Auto-Select
+                                            </Button>
+                                          );
+                                        }
+                                        return null;
+                                      })()}
+                                    </div>
+                                    
+                                    <ImageGallery
+                                      categories={smartMode[comment.id] ? (
+                                        realTimeCategories[comment.id]?.length > 0 
+                                          ? realTimeCategories[comment.id] 
+                                          : (detectedCategories[comment.id] || [])
+                                      ) : []}
+                                      imagePacks={imagePacks}
+                                      selectedImages={selectedImages[comment.id] || []}
+                                      onImageSelect={(filename) => handleImageSelect(comment.id, filename)}
+                                      onBulkSelect={(filenames) => handleBulkImageSelect(comment.id, filenames)}
+                                      smartMode={smartMode[comment.id] || false}
+                                      loading={loadingCategories[comment.id] || false}
+                                    />
+                                  </div>
+                                </div>
+                              )}
+
+                              {/* Integrated Action Bar */}
+                              <div className="p-3 flex items-center justify-between bg-gray-50/30">
+                                <div className="flex items-center gap-2">
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() => toggleImageSelector(comment.id)}
+                                    className="h-8 px-3 text-gray-600 hover:text-gray-800"
+                                  >
+                                    <Image className="h-4 w-4 mr-1" />
+                                    {showImageSelector[comment.id] ? 'Hide' : 'Add'} Images
+                                    {(selectedImages[comment.id] || []).length > 0 && (
+                                      <span className="ml-1 text-xs bg-blue-100 text-blue-800 px-1 rounded">
+                                        {(selectedImages[comment.id] || []).length}
+                                      </span>
+                                    )}
+                                  </Button>
+                                </div>
+                                
+                                <div className="flex items-center gap-2">
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={cancelEditing}
+                                    className="h-8"
+                                  >
+                                    Cancel
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    onClick={() => handleApprove(comment.id)}
+                                    className="bg-green-600 hover:bg-green-700 h-8"
+                                  >
+                                    <CheckCircle className="h-4 w-4 mr-1" />
+                                    Post to Facebook
+                                  </Button>
+                                </div>
+                              </div>
                             </div>
                           </div>
                         ) : (
@@ -706,25 +846,7 @@ export const CommentQueue: React.FC = () => {
                         View Post
                       </Button>
 
-                      {editingComment === comment.id ? (
-                        <div className="flex gap-1">
-                          <Button
-                            size="sm"
-                            onClick={() => handleApprove(comment.id)}
-                            className="bg-green-600 hover:bg-green-700"
-                          >
-                            <CheckCircle className="h-4 w-4 mr-1" />
-                            Save & Post to Facebook
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={cancelEditing}
-                          >
-                            Cancel
-                          </Button>
-                        </div>
-                      ) : (
+                      {editingComment !== comment.id && (
                         <div className="flex gap-1">
                           <Button
                             size="sm"
