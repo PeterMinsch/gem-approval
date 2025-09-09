@@ -91,7 +91,9 @@ class BrowserManager:
                 service.start()
                 
                 self.driver = webdriver.Chrome(service=service, options=chrome_options)
-                self.driver.implicitly_wait(10)
+                # PERFORMANCE FIX: Reduced implicit wait to prevent 73-second delays
+                # Use explicit waits (WebDriverWait) for specific elements instead
+                self.driver.implicitly_wait(1)  # Reduced from 10 seconds
                 self.driver.set_page_load_timeout(30)
                 
                 # Validate connection

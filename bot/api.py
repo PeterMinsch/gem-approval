@@ -193,6 +193,7 @@ class QueuedComment(BaseModel):
     post_screenshot: Optional[str] = None
     post_images: Optional[str] = None
     post_author: Optional[str] = None
+    post_author_url: Optional[str] = None
     post_engagement: Optional[str] = None
     status: str  # "pending", "approved", "rejected", "posted"
     created_at: str
@@ -428,14 +429,17 @@ def post_comment_realtime(comment_id: str, post_url: str, comment_text: str, ima
 def add_comment_to_queue(post_url: str, post_text: str, generated_comment: str, post_type: str,
                         post_screenshot: str = None, post_images: str = None,
                         post_author: str = None, post_engagement: str = None,
-                        detected_categories: List[str] = None) -> str:
+                        detected_categories: List[str] = None, post_author_url: str = None) -> str:
     """Add a generated comment to the approval queue using database with enhanced post data"""
     logger.info(f"🔄 Adding to comment queue: {post_type} - {post_url[:50]}...")
     logger.info(f"📝 Comment text: {generated_comment[:100] if generated_comment else 'None'}...")
     
+    # DEBUGGING: Log post_author_url at API layer
+    logger.debug(f"API_LAYER: Received post_author_url: '{post_author_url}' (length: {len(post_author_url) if post_author_url else 0})")
+    
     queue_id = db.add_to_comment_queue(post_url, post_text, generated_comment, post_type,
                                      post_screenshot, post_images, post_author, post_engagement,
-                                     detected_categories=detected_categories)
+                                     detected_categories=detected_categories, post_author_url=post_author_url)
     
     if queue_id:
         bot_status["comments_queued"] += 1
@@ -459,6 +463,7 @@ def get_pending_comments() -> List[QueuedComment]:
             post_screenshot=db_comment.get('post_screenshot'),
             post_images=db_comment.get('post_images'),
             post_author=db_comment.get('post_author'),
+            post_author_url=db_comment.get('post_author_url'),
             post_engagement=db_comment.get('post_engagement'),
             status=db_comment['status'],
             created_at=db_comment['queued_at'],
@@ -481,6 +486,11 @@ def get_comment_by_id(comment_id: str) -> Optional[QueuedComment]:
                 post_text=db_comment['post_text'],
                 generated_comment=db_comment['comment_text'],
                 post_type=db_comment['post_type'],
+                post_screenshot=db_comment.get('post_screenshot'),
+                post_images=db_comment.get('post_images'),
+                post_author=db_comment.get('post_author'),
+                post_author_url=db_comment.get('post_author_url'),
+                post_engagement=db_comment.get('post_engagement'),
                 status=db_comment['status'],
                 created_at=db_comment['queued_at'],
                 approved_at=db_comment['approved_at'],
@@ -637,13 +647,18 @@ def run_bot_with_queuing(bot_instance: FacebookAICommentBot, max_scrolls: int = 
                     logger.info(f"⏭️ Post filtered out: {classification.post_type}")
                     return
                 
-                # Extract post author for personalization
-                logger.info(f"👤 Extracting post author for personalization...")
+                # Extract post author for personalization with profile URL
+                logger.info(f"👤 Extracting post author and profile URL for personalization...")
                 post_author_name = ""
+                post_author_profile_url = ""
                 try:
-                    if bot_instance and bot_instance.driver:
+                    if bot_instance and bot_instance.driver and hasattr(bot_instance.post_extractor, 'get_post_author_with_profile'):
+                        post_author_name, post_author_profile_url = bot_instance.post_extractor.get_post_author_with_profile()
+                        logger.info(f"✅ Extracted post author: '{post_author_name}' with profile URL: '{post_author_profile_url[:50] if post_author_profile_url else 'None'}'")
+                    elif bot_instance and bot_instance.driver:
+                        # Fallback to old method if enhanced method not available
                         post_author_name = bot_instance.get_post_author()
-                        logger.info(f"✅ Extracted post author: '{post_author_name}'")
+                        logger.info(f"✅ Extracted post author (fallback): '{post_author_name}'")
                     else:
                         logger.warning("⚠️ No bot instance/driver available for author extraction")
                 except Exception as e:
@@ -662,6 +677,7 @@ def run_bot_with_queuing(bot_instance: FacebookAICommentBot, max_scrolls: int = 
                     post_screenshot = None
                     post_images = None
                     post_author = post_author_name  # Use the extracted author name for personalization
+                    post_author_url = post_author_profile_url  # Use the extracted profile URL for Messenger links
                     post_engagement = None
                     
                     try:
@@ -710,15 +726,30 @@ def run_bot_with_queuing(bot_instance: FacebookAICommentBot, max_scrolls: int = 
                                     import base64
                                     post_screenshot = f"data:image/png;base64,{base64.b64encode(post_screenshot).decode('utf-8')}"
                                     
-                                    # Try to extract post author using the improved method
+                                    # Try to extract post author and profile URL using the enhanced method
                                     try:
-                                        # Use the bot's improved get_post_author method
-                                        extracted_author = bot_instance.get_post_author()
-                                        if extracted_author:
-                                            post_author = extracted_author
-                                            logger.info(f"✅ Extracted post author: '{post_author}'")
+                                        # Use the enhanced get_post_author_with_profile method if available
+                                        if hasattr(bot_instance.post_extractor, 'get_post_author_with_profile'):
+                                            extracted_author, extracted_author_url = bot_instance.post_extractor.get_post_author_with_profile()
+                                            
+                                            # DEBUGGING: Log the extraction results
+                                            logger.debug(f"BOT_EXTRACTION: Extracted author: '{extracted_author}'")
+                                            logger.debug(f"BOT_EXTRACTION: Extracted URL: '{extracted_author_url}' (length: {len(extracted_author_url) if extracted_author_url else 0})")
+                                            
+                                            if extracted_author:
+                                                post_author = extracted_author
+                                                post_author_url = extracted_author_url
+                                                logger.info(f"✅ Extracted post author: '{post_author}' with profile URL: '{post_author_url[:50] if post_author_url else 'None'}'")
+                                            else:
+                                                logger.warning("⚠️ Could not extract post author")
                                         else:
-                                            logger.warning("⚠️ Could not extract post author")
+                                            # Fallback to old method
+                                            extracted_author = bot_instance.get_post_author()
+                                            if extracted_author:
+                                                post_author = extracted_author
+                                                logger.info(f"✅ Extracted post author (fallback): '{post_author}'")
+                                            else:
+                                                logger.warning("⚠️ Could not extract post author")
                                     except Exception as e:
                                         logger.debug(f"Author extraction failed: {e}")
                                         
@@ -751,7 +782,8 @@ def run_bot_with_queuing(bot_instance: FacebookAICommentBot, max_scrolls: int = 
                         logger.info(f"📊 Queue data - Type: {classification.post_type}, Author: {post_author}, Images: {len(post_images) if post_images else 0}")
                         # Add comment directly to the approval queue using the database
                         queue_id = add_comment_to_queue(clean_url, post_text, comment, classification.post_type,
-                                                      post_screenshot, post_images, post_author, post_engagement)
+                                                      post_screenshot, post_images, post_author, post_engagement,
+                                                      post_author_url=post_author_profile_url)
                         logger.info(f"🔄 add_comment_to_queue returned: {queue_id}")
                         
                         if queue_id:
@@ -765,7 +797,8 @@ def run_bot_with_queuing(bot_instance: FacebookAICommentBot, max_scrolls: int = 
                         # Try one more time with minimal data
                         try:
                             logger.info(f"🔄 Retrying with minimal data...")
-                            add_comment_to_queue(post_url, post_text, comment, classification.post_type)
+                            add_comment_to_queue(post_url, post_text, comment, classification.post_type, 
+                                               post_author_url=post_author_profile_url)
                             logger.info(f"Fallback: Comment queued with minimal data: {classification.post_type}")
                         except Exception as e2:
                             logger.error(f"❌ Complete failure queuing comment: {e2}")
@@ -800,7 +833,7 @@ def run_bot_with_queuing(bot_instance: FacebookAICommentBot, max_scrolls: int = 
             if is_specific_post:
                 # Process the specific post directly
                 logger.info("Processing specific post directly...")
-                time.sleep(8)  # Wait for page to load
+                time.sleep(2)  # Reduced wait for page to load
                 
                 # Clean the URL
                 clean_url = target_url.split('?')[0] if '?' in target_url else target_url
@@ -830,6 +863,21 @@ def run_bot_with_queuing(bot_instance: FacebookAICommentBot, max_scrolls: int = 
                     try:
                         # Actually scan for new posts using the bot's real methods
                         logger.info("Scanning for new posts...")
+                        
+                        # DEBUGGING: Check current page before scanning
+                        current_url = bot_instance.driver.current_url if bot_instance.driver else "unknown"
+                        logger.debug(f"SCAN_DEBUG: Current URL before scanning: {current_url[:100]}...")
+                        
+                        # DEBUGGING: Ensure we're on the group feed, not individual posts
+                        group_url = CONFIG.get('POST_URL', 'https://www.facebook.com')
+                        if '/groups/' in group_url and 'fbid=' not in current_url and '/posts/' not in current_url:
+                            # We're still on the group feed, good to scan
+                            logger.debug(f"SCAN_DEBUG: On group feed, proceeding with scan")
+                        elif '/groups/' in group_url:
+                            # We might be on an individual post, navigate back to group feed
+                            logger.info(f"SCAN_DEBUG: Navigating back to group feed: {group_url}")
+                            bot_instance.driver.get(group_url)
+                            time.sleep(2)  # Wait for page load
                         
                         # Use the bot's actual post scanning method
                         post_links = bot_instance.scroll_and_collect_post_links(max_scrolls=5)
@@ -903,8 +951,8 @@ def run_bot_with_queuing(bot_instance: FacebookAICommentBot, max_scrolls: int = 
                                 continue
                         
                         # Wait before next scan (reduced for testing)
-                        logger.info("Scan cycle complete. Starting next scan in 30 seconds...")
-                        time.sleep(30)
+                        logger.info("Scan cycle complete. Starting next scan in 5 seconds...")
+                        time.sleep(5)  # Reduced from 30s for testing
                         
                     except Exception as e:
                         logger.error(f"Error during scanning: {e}")
@@ -923,7 +971,7 @@ def run_bot_with_queuing(bot_instance: FacebookAICommentBot, max_scrolls: int = 
                             except Exception as reconnect_error:
                                 logger.error(f"Failed to reconnect browser: {reconnect_error}")
                         
-                        time.sleep(60)  # Wait a minute before retrying
+                        time.sleep(10)  # Reduced from 60s - wait before retrying
                     
         except Exception as e:
             logger.error(f"Error setting up Chrome or navigating: {e}")
@@ -2031,7 +2079,8 @@ async def send_comment(request: Dict[str, Any]):
             post_type="COMPOSED",
             post_images=json.dumps(images) if images else None,
             post_author="User",
-            detected_categories=None  # Categories are already analyzed in real-time
+            detected_categories=None,  # Categories are already analyzed in real-time
+            post_author_url=None  # No Facebook profile URL for user-composed comments
         )
         
         if queue_id:

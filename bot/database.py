@@ -210,6 +210,17 @@ class BotDatabase:
                 else:
                     logger.debug(f"Migration note: {e}")
             
+            # Add post_author_url column if it doesn't exist (migration)
+            try:
+                cursor.execute("ALTER TABLE comment_queue ADD COLUMN post_author_url TEXT")
+                logger.info("Added post_author_url column to comment_queue table")
+            except Exception as e:
+                # Column probably already exists
+                if "duplicate column name" in str(e).lower():
+                    logger.debug("post_author_url column already exists in comment_queue table")
+                else:
+                    logger.debug(f"Migration note: {e}")
+            
             # Bot statistics and sessions tables
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bot_stats (
@@ -397,9 +408,13 @@ class BotDatabase:
     def add_to_comment_queue(self, post_url: str, post_text: str, comment_text: str, 
                             post_type: str, post_screenshot: str = None, post_images: str = None,
                             post_author: str = None, post_engagement: str = None,
-                            image_pack_id: str = None, detected_categories: List[str] = None) -> Optional[int]:
+                            image_pack_id: str = None, detected_categories: List[str] = None,
+                            post_author_url: str = None) -> Optional[int]:
         """Add a comment to the approval queue with enhanced post data"""
         try:
+            # DEBUGGING: Log post_author_url input
+            logger.debug(f"DB_STORAGE: Received post_author_url: '{post_author_url}' (length: {len(post_author_url) if post_author_url else 0})")
+            
             # Convert categories to JSON string
             categories_json = json.dumps(detected_categories or [])
             
@@ -412,18 +427,28 @@ class BotDatabase:
                 # Normalize URL by removing query parameters and fragments
                 norm_url = post_url.split('?')[0].split('#')[0] if post_url else post_url
                 logger.info(f"Normalized non-photo URL: {norm_url}")
+            
+            # DEBUGGING: Log what we're about to store
+            logger.debug(f"DB_STORAGE: About to store post_author_url: '{post_author_url}'")
+            
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
                     INSERT INTO comment_queue (post_url, post_text, comment_text, post_type, 
                                             post_screenshot, post_images, post_author, post_engagement, 
-                                            image_pack_id, detected_categories)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                            image_pack_id, detected_categories, post_author_url)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (norm_url, post_text, comment_text, post_type, post_screenshot, 
-                     post_images, post_author, post_engagement, image_pack_id, categories_json))
+                     post_images, post_author, post_engagement, image_pack_id, categories_json, post_author_url))
                 conn.commit()
                 queue_id = cursor.lastrowid
                 logger.info(f"Added comment to queue (ID: {queue_id}): {norm_url}")
+                
+                # DEBUGGING: Verify what was actually stored
+                cursor.execute("SELECT post_author_url FROM comment_queue WHERE id = ?", (queue_id,))
+                stored_url = cursor.fetchone()[0]
+                logger.debug(f"DB_STORAGE: Verified stored post_author_url: '{stored_url}' (length: {len(stored_url) if stored_url else 0})")
+                
                 return queue_id
         except Exception as e:
             logger.error(f"Failed to add comment to queue: {e}")

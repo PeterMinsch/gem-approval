@@ -38,6 +38,7 @@ interface QueuedComment {
   generated_comment: string;
   post_type: string;
   post_author?: string;
+  post_author_url?: string;
   post_engagement?: string;
   post_images?: string;
   status: string;
@@ -61,6 +62,58 @@ interface ImagePack {
   name: string;
   images: { filename: string; description: string }[];
 }
+
+// Utility functions for Facebook Messenger integration
+const extractFacebookIdFromProfileUrl = (profileUrl: string): string | null => {
+  console.log('🔍 Extracting Facebook ID from URL:', profileUrl);
+  
+  if (!profileUrl) {
+    console.log('❌ No profile URL provided');
+    return null;
+  }
+  
+  // Handle group-based profile URLs first
+  // Pattern: /groups/[groupid]/user/[userid]/
+  if (profileUrl.includes('/groups/') && profileUrl.includes('/user/')) {
+    console.log('🎯 Detected group-based profile URL');
+    const userMatch = profileUrl.match(/\/user\/([^/?]+)/);
+    if (userMatch) {
+      console.log('✅ Extracted user ID from group URL:', userMatch[1]);
+      return userMatch[1];
+    } else {
+      console.log('❌ Group URL pattern matched but failed to extract user ID');
+    }
+  }
+  
+  // Extract user ID from other Facebook URL formats
+  const patterns = [
+    { pattern: /facebook\.com\/profile\.php\?id=(\d+)/, name: 'profile.php?id format' },
+    { pattern: /facebook\.com\/([a-zA-Z0-9._-]+)(?:\/|$)/, name: 'direct username format' },
+    { pattern: /facebook\.com\/people\/[^/]+\/(\d+)/, name: 'people/name/id format' }
+  ];
+  
+  for (let i = 0; i < patterns.length; i++) {
+    const { pattern, name } = patterns[i];
+    console.log(`🔍 Trying pattern ${i + 1} (${name}):`, pattern);
+    const match = profileUrl.match(pattern);
+    if (match) {
+      console.log(`✅ Pattern ${i + 1} matched! Extracted ID:`, match[1]);
+      return match[1];
+    } else {
+      console.log(`❌ Pattern ${i + 1} (${name}) no match`);
+    }
+  }
+  
+  console.log('❌ No patterns matched for URL:', profileUrl);
+  return null;
+};
+
+const createMessengerLink = (profileUrl: string): string | null => {
+  const userId = extractFacebookIdFromProfileUrl(profileUrl);
+  if (!userId) return null;
+  
+  return `https://www.facebook.com/messages/t/${userId}`;
+};
 
 export const CommentQueue: React.FC = () => {
   const [comments, setComments] = useState<QueuedComment[]>([]);
@@ -840,6 +893,25 @@ export const CommentQueue: React.FC = () => {
                             <XCircle className="h-4 w-4 mr-2" />
                             Reject
                           </Button>
+                          {comment.post_author_url && comment.post_author && comment.post_author !== "User" && (
+                            <Button
+                              size="sm"
+                              onClick={() => {
+                                console.log('PM Button clicked for:', comment.post_author, comment.post_author_url);
+                                const messengerLink = createMessengerLink(comment.post_author_url!);
+                                console.log('Generated Messenger link:', messengerLink);
+                                if (messengerLink) {
+                                  window.open(messengerLink, '_blank');
+                                } else {
+                                  console.error('Failed to create Messenger link from:', comment.post_author_url);
+                                }
+                              }}
+                              className="bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white shadow-lg border-0 rounded-lg font-medium transition-all duration-200 hover:scale-105 hover:shadow-xl"
+                            >
+                              <MessageCircle className="h-4 w-4 mr-2" />
+                              Message Author
+                            </Button>
+                          )}
                         </div>
                       )}
                     </div>
