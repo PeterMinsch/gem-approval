@@ -13,6 +13,7 @@ from datetime import datetime
 import os
 import json
 import uuid
+import io
 from io import BytesIO
 from selenium.webdriver.common.by import By
 
@@ -20,6 +21,7 @@ from facebook_comment_bot import FacebookAICommentBot
 from bravo_config import CONFIG
 from database import db
 from performance_timer import log_performance_summary
+from modules.message_generator import MessageGenerator
 
 # Configure logging
 def setup_api_logger():
@@ -720,11 +722,45 @@ def run_bot_with_queuing(bot_instance: FacebookAICommentBot, max_scrolls: int = 
                             
                             # Try to capture screenshot and metadata (optional, don't fail if article not found)
                             try:
-                                post_element = bot_instance.driver.find_element(By.XPATH, "//div[@role='article']")
+                                # Try to find the main post container (not comments)
+                                # Look for article that contains the post text we found
+                                post_xpath = "//div[@role='article'][1]"  # First article is usually the main post
+                                post_element = bot_instance.driver.find_element(By.XPATH, post_xpath)
+                                
                                 if post_element:
+                                    # Try to exclude comments section if possible
+                                    try:
+                                        # Find the post content area (before comments)
+                                        content_script = """
+                                        var article = arguments[0];
+                                        // Find where comments start (usually after post content)
+                                        var commentSection = article.querySelector('[aria-label*="Comment"], [role="complementary"]');
+                                        if (commentSection) {
+                                            // Hide comments temporarily for screenshot
+                                            commentSection.style.display = 'none';
+                                        }
+                                        return true;
+                                        """
+                                        bot_instance.driver.execute_script(content_script, post_element)
+                                    except:
+                                        pass  # If we can't hide comments, still take screenshot
+                                    
                                     post_screenshot = post_element.screenshot_as_png
                                     import base64
                                     post_screenshot = f"data:image/png;base64,{base64.b64encode(post_screenshot).decode('utf-8')}"
+                                    
+                                    # Restore comments if hidden
+                                    try:
+                                        restore_script = """
+                                        var article = arguments[0];
+                                        var commentSection = article.querySelector('[aria-label*="Comment"], [role="complementary"]');
+                                        if (commentSection) {
+                                            commentSection.style.display = '';
+                                        }
+                                        """
+                                        bot_instance.driver.execute_script(restore_script, post_element)
+                                    except:
+                                        pass
                                     
                                     # Try to extract post author and profile URL using the enhanced method
                                     try:
@@ -1140,6 +1176,131 @@ async def get_comment_templates():
             "error": str(e),
             "templates": {}
         }
+
+@app.post("/generate-message/{comment_id}")
+async def generate_dm_message(comment_id: str):
+    """Generate personalized DM message for a specific comment"""
+    try:
+        # Get comment data from database
+        try:
+            # Convert string ID back to integer for database lookup
+            comment_id_int = int(comment_id)
+            db_comment = db.get_comment_by_id(comment_id_int)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid comment ID format")
+        if not db_comment:
+            raise HTTPException(status_code=404, detail="Comment not found")
+        
+        logger.info(f"🎯 Generating DM message for comment {comment_id} (author: {db_comment.get('post_author')})")
+        
+        # Initialize message generator
+        generator = MessageGenerator(CONFIG)
+        
+        # Generate the message
+        start_time = time.time()
+        result = await generator.generate_dm_message(db_comment)
+        generation_time = time.time() - start_time
+        
+        # 🚀 Use stored images and screenshot for fast Smart Launcher response
+        post_images = []
+        post_screenshot = None
+        
+        # Parse stored images from database
+        if db_comment.get('post_images'):
+            try:
+                stored_images = db_comment['post_images']
+                if isinstance(stored_images, str) and stored_images.startswith('['):
+                    # JSON array of image URLs/data
+                    post_images = json.loads(stored_images)
+                elif isinstance(stored_images, str):
+                    # Single image URL/data as string
+                    post_images = [stored_images] if stored_images else []
+                logger.info(f"📷 Using stored images: {len(post_images)} image(s)")
+            except json.JSONDecodeError as e:
+                logger.warning(f"Failed to parse stored images: {e}")
+                post_images = []
+        
+        # Get stored screenshot
+        post_screenshot = db_comment.get('post_screenshot')
+        if post_screenshot:
+            logger.info(f"📸 Using stored screenshot ({len(post_screenshot)} chars)")
+        else:
+            logger.info("📸 No stored screenshot available")
+        
+        # Create Messenger URL from author profile URL
+        messenger_url = None
+        if db_comment.get('post_author_url'):
+            try:
+                from modules.post_extractor import PostExtractor
+                facebook_id = PostExtractor.extract_facebook_id_from_profile_url(db_comment['post_author_url'])
+                if facebook_id:
+                    messenger_url = f"https://www.facebook.com/messages/t/{facebook_id}"
+                    logger.debug(f"✅ Created Messenger URL: {messenger_url}")
+            except Exception as e:
+                logger.warning(f"Failed to create Messenger URL: {e}")
+        
+        # post_images and post_screenshot are already set above from fresh capture
+        
+        # Enhanced response with metadata and images
+        response = {
+            'success': True,
+            'message': result['message'],
+            'author_name': result['author_name'],
+            'generation_method': result['generation_method'],
+            'character_count': result['character_count'],
+            'generation_time_seconds': round(generation_time, 2),
+            'post_type': result['post_type'],
+            'messenger_url': messenger_url,
+            'post_images': post_images,
+            'post_screenshot': post_screenshot,
+            'has_images': len(post_images) > 0 or bool(post_screenshot)
+        }
+        
+        logger.info(f"✅ Generated {result['character_count']}-char message using {result['generation_method']} in {generation_time:.2f}s")
+        return response
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to generate message for comment {comment_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Message generation failed: {str(e)}")
+
+@app.get("/proxy-image")
+async def proxy_image(url: str):
+    """Proxy endpoint to fetch images and bypass CORS restrictions"""
+    try:
+        import httpx
+        
+        logger.info(f"🖼️ Proxying image request for: {url[:100]}...")
+        
+        # Validate URL is an image URL
+        if not url.startswith(('http://', 'https://')):
+            raise HTTPException(status_code=400, detail="Invalid URL")
+        
+        # Fetch the image
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, timeout=10.0, follow_redirects=True)
+            
+            if response.status_code != 200:
+                raise HTTPException(status_code=response.status_code, detail="Failed to fetch image")
+            
+            # Determine content type
+            content_type = response.headers.get('content-type', 'image/jpeg')
+            
+            # Return the image with appropriate headers
+            return StreamingResponse(
+                io.BytesIO(response.content),
+                media_type=content_type,
+                headers={
+                    'Cache-Control': 'public, max-age=3600',  # Cache for 1 hour
+                    'Access-Control-Allow-Origin': '*'  # Allow CORS
+                }
+            )
+            
+    except httpx.TimeoutException:
+        logger.error(f"❌ Timeout fetching image: {url[:100]}")
+        raise HTTPException(status_code=504, detail="Image fetch timeout")
+    except Exception as e:
+        logger.error(f"❌ Failed to proxy image: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to proxy image: {str(e)}")
 
 @app.post("/comments/approve", response_model=CommentApprovalResponse)
 async def approve_comment_endpoint(request: CommentApprovalRequest):

@@ -30,6 +30,8 @@ import {
 } from "lucide-react";
 import { ImageGallery } from "./ImageGallery";
 import { getSuggestedImages } from "@/services/categoryMapper";
+import { useMessageGeneration } from "@/hooks/useMessageGeneration";
+import { executeSmartLauncher, getInstructionMessage } from "@/utils/messageUtils";
 
 interface QueuedComment {
   id: string;
@@ -130,6 +132,11 @@ export const CommentQueue: React.FC = () => {
   const [imagePacks, setImagePacks] = useState<ImagePack[]>([]);
   // Smart categorization state
   const [smartMode, setSmartMode] = useState<Record<string, boolean>>({});
+  
+  // Smart Launcher state
+  const { generateMessage, isGenerating, error: messageError, clearError } = useMessageGeneration();
+  const [generatedMessages, setGeneratedMessages] = useState<Record<string, string>>({});
+  const [smartLauncherNotifications, setSmartLauncherNotifications] = useState<Record<string, string>>({});
   const [detectedCategories, setDetectedCategories] = useState<Record<string, string[]>>({});
   const [loadingCategories, setLoadingCategories] = useState<Record<string, boolean>>({});
   // Real-time text analysis state
@@ -246,6 +253,91 @@ export const CommentQueue: React.FC = () => {
       }
     } catch (error) {
       console.error("Failed to reject comment:", error);
+    }
+  };
+
+  const handleSmartLauncher = async (commentId: string, comment: QueuedComment) => {
+    console.log('🚀 Smart Launcher initiated for comment:', commentId);
+    
+    try {
+      // Clear any previous notifications
+      setSmartLauncherNotifications(prev => ({ ...prev, [commentId]: '' }));
+      clearError();
+
+      // Step 1: Generate the message
+      const result = await generateMessage(commentId);
+      if (!result) {
+        throw new Error('Failed to generate message');
+      }
+
+      console.log('✅ Message generated:', {
+        method: result.generation_method,
+        chars: result.character_count,
+        time: `${result.generation_time_seconds}s`
+      });
+
+      // Store the generated message
+      setGeneratedMessages(prev => ({ ...prev, [commentId]: result.message }));
+
+      // Step 2: Execute Smart Launcher (clipboard + Messenger)
+      if (!result.messenger_url) {
+        throw new Error('No Messenger URL available');
+      }
+
+      // Prepare image URLs - combine post_images and screenshot
+      const imageUrls: string[] = [];
+      console.log('📸 Image data from API:', {
+        post_images: result.post_images,
+        post_screenshot: result.post_screenshot ? 'Present (base64)' : 'None',
+        has_images: result.has_images
+      });
+      
+      if (result.post_images && result.post_images.length > 0) {
+        imageUrls.push(...result.post_images);
+        console.log(`✅ Added ${result.post_images.length} post images`);
+      }
+      if (result.post_screenshot && !imageUrls.length) {
+        // Use screenshot as fallback if no other images
+        imageUrls.push(result.post_screenshot);
+        console.log('✅ Using screenshot as fallback');
+      }
+      
+      console.log(`📷 Total images to process: ${imageUrls.length}`);
+
+      // Check for debug mode (set window.DEBUG_CLIPBOARD = true in console)
+      const debugMode = (window as any).DEBUG_CLIPBOARD === true;
+      
+      const launcherResult = await executeSmartLauncher(
+        result.message, 
+        result.messenger_url,
+        imageUrls,
+        debugMode
+      );
+      
+      // Step 3: Show user feedback
+      const instructionMessage = getInstructionMessage(launcherResult);
+      setSmartLauncherNotifications(prev => ({ 
+        ...prev, 
+        [commentId]: instructionMessage 
+      }));
+
+      // Auto-clear notification after 8 seconds
+      setTimeout(() => {
+        setSmartLauncherNotifications(prev => ({ ...prev, [commentId]: '' }));
+      }, 8000);
+
+    } catch (error) {
+      console.error('❌ Smart Launcher failed:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      setSmartLauncherNotifications(prev => ({ 
+        ...prev, 
+        [commentId]: `❌ Error: ${errorMessage}` 
+      }));
+      
+      // Clear error notification after 5 seconds
+      setTimeout(() => {
+        setSmartLauncherNotifications(prev => ({ ...prev, [commentId]: '' }));
+      }, 5000);
     }
   };
 
@@ -894,23 +986,54 @@ export const CommentQueue: React.FC = () => {
                             Reject
                           </Button>
                           {comment.post_author_url && comment.post_author && comment.post_author !== "User" && (
-                            <Button
-                              size="sm"
-                              onClick={() => {
-                                console.log('PM Button clicked for:', comment.post_author, comment.post_author_url);
-                                const messengerLink = createMessengerLink(comment.post_author_url!);
-                                console.log('Generated Messenger link:', messengerLink);
-                                if (messengerLink) {
-                                  window.open(messengerLink, '_blank');
-                                } else {
-                                  console.error('Failed to create Messenger link from:', comment.post_author_url);
-                                }
-                              }}
-                              className="bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white shadow-lg border-0 rounded-lg font-medium transition-all duration-200 hover:scale-105 hover:shadow-xl"
-                            >
-                              <MessageCircle className="h-4 w-4 mr-2" />
-                              Message Author
-                            </Button>
+                            <div className="space-y-2">
+                              <Button
+                                size="sm"
+                                disabled={isGenerating}
+                                onClick={() => handleSmartLauncher(comment.id, comment)}
+                                className="bg-gradient-to-r from-purple-500 to-blue-600 hover:from-purple-600 hover:to-blue-700 disabled:from-gray-400 disabled:to-gray-500 text-white shadow-lg border-0 rounded-lg font-medium transition-all duration-200 hover:scale-105 hover:shadow-xl disabled:cursor-not-allowed disabled:transform-none"
+                              >
+                                {isGenerating ? (
+                                  <>
+                                    <div className="animate-spin h-4 w-4 mr-2 border-2 border-white border-t-transparent rounded-full" />
+                                    Generating...
+                                  </>
+                                ) : (
+                                  <>
+                                    <Sparkles className="h-4 w-4 mr-2" />
+                                    Generate & Send Message
+                                  </>
+                                )}
+                              </Button>
+                              
+                              {/* Notification area */}
+                              {smartLauncherNotifications[comment.id] && (
+                                <div className={`text-xs p-2 rounded-md ${
+                                  smartLauncherNotifications[comment.id].includes('❌') 
+                                    ? 'bg-red-50 text-red-700 border border-red-200' 
+                                    : 'bg-green-50 text-green-700 border border-green-200'
+                                }`}>
+                                  {smartLauncherNotifications[comment.id]}
+                                </div>
+                              )}
+                              
+                              {/* Show generated message preview */}
+                              {generatedMessages[comment.id] && (
+                                <div className="text-xs p-2 bg-blue-50 border border-blue-200 rounded-md">
+                                  <div className="font-medium text-blue-800 mb-1">Generated Message:</div>
+                                  <div className="text-blue-700 italic">
+                                    "{generatedMessages[comment.id].substring(0, 100)}..."
+                                  </div>
+                                </div>
+                              )}
+                              
+                              {/* Debug info - shows processing status */}
+                              {isGenerating && (
+                                <div className="text-xs text-gray-500">
+                                  Processing: Generating message → Fetching images → Copying to clipboard → Opening Messenger
+                                </div>
+                              )}
+                            </div>
                           )}
                         </div>
                       )}

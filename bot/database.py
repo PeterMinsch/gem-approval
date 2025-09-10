@@ -291,6 +291,28 @@ class BotDatabase:
                 'body': "Hi! We're Bravo Creations — full-service B2B for jewelers: CAD, casting, stone setting, engraving, enamel, finishing. Fast turnaround, meticulous QC. {{phone}} • {{register_url}} — ask for {{ask_for}}.",
                 'is_default': True
             },
+            # DM Templates for Smart Launcher
+            {
+                'id': str(uuid.uuid4()),
+                'name': 'DM Service',
+                'category': 'DM_SERVICE',
+                'body': "Hi {{author_name}}! Saw your jewelry work - impressive craftsmanship! We're Bravo Creations, full-service B2B manufacturing specializing in CAD, casting, and setting. Would love to chat about partnership opportunities. {{register_url}} • {{phone}} — ask for {{ask_for}}",
+                'is_default': True
+            },
+            {
+                'id': str(uuid.uuid4()),
+                'name': 'DM ISO Pivot',
+                'category': 'DM_ISO',
+                'body': "Hi {{author_name}}! Great style in your post! We don't stock pieces, but this is exactly what we manufacture daily with CAD + casting + setting. Quick turnaround, quality focus. {{register_url}} • {{phone}} — ask for {{ask_for}}",
+                'is_default': True
+            },
+            {
+                'id': str(uuid.uuid4()),
+                'name': 'DM General',
+                'category': 'DM_GENERAL',
+                'body': "Hi {{author_name}}! Noticed your jewelry post - beautiful work! We're Bravo Creations, full-service B2B manufacturing (CAD, casting, setting, engraving). Always looking to connect with quality jewelers. {{register_url}} • {{phone}} — ask for {{ask_for}}",
+                'is_default': True
+            },
             {
                 'id': str(uuid.uuid4()),
                 'name': 'ISO Pivot',
@@ -700,7 +722,7 @@ class BotDatabase:
         template_id = str(uuid.uuid4())
         
         # Validate category
-        valid_categories = ['GENERIC', 'ISO_PIVOT', 'CAD', 'CASTING', 'SETTING', 'ENGRAVING', 'ENAMEL']
+        valid_categories = ['GENERIC', 'ISO_PIVOT', 'CAD', 'CASTING', 'SETTING', 'ENGRAVING', 'ENAMEL', 'DM_SERVICE', 'DM_ISO', 'DM_GENERAL']
         if category not in valid_categories:
             raise ValueError(f"Invalid category. Must be one of: {', '.join(valid_categories)}")
         
@@ -754,7 +776,7 @@ class BotDatabase:
                 params.append(name)
             
             if category is not None:
-                valid_categories = ['GENERIC', 'ISO_PIVOT', 'CAD', 'CASTING', 'SETTING', 'ENGRAVING', 'ENAMEL']
+                valid_categories = ['GENERIC', 'ISO_PIVOT', 'CAD', 'CASTING', 'SETTING', 'ENGRAVING', 'ENAMEL', 'DM_SERVICE', 'DM_ISO', 'DM_GENERAL']
                 if category not in valid_categories:
                     raise ValueError(f"Invalid category. Must be one of: {', '.join(valid_categories)}")
                 updates.append("category = ?")
