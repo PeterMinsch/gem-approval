@@ -29,6 +29,8 @@ import {
   Sparkles,
 } from "lucide-react";
 import { ImageGallery } from "./ImageGallery";
+import { MessageGenerationSidebar } from "./MessageGenerationSidebar";
+import { CommentGenerationSidebar } from "./CommentGenerationSidebar";
 import { getSuggestedImages } from "@/services/categoryMapper";
 import { useMessageGeneration } from "@/hooks/useMessageGeneration";
 import { executeEnhancedSmartLauncher } from "@/utils/messageUtils";
@@ -67,33 +69,42 @@ interface ImagePack {
 
 // Utility functions for Facebook Messenger integration
 const extractFacebookIdFromProfileUrl = (profileUrl: string): string | null => {
-  console.log('🔍 Extracting Facebook ID from URL:', profileUrl);
-  
+  console.log("🔍 Extracting Facebook ID from URL:", profileUrl);
+
   if (!profileUrl) {
-    console.log('❌ No profile URL provided');
+    console.log("❌ No profile URL provided");
     return null;
   }
-  
+
   // Handle group-based profile URLs first
   // Pattern: /groups/[groupid]/user/[userid]/
-  if (profileUrl.includes('/groups/') && profileUrl.includes('/user/')) {
-    console.log('🎯 Detected group-based profile URL');
+  if (profileUrl.includes("/groups/") && profileUrl.includes("/user/")) {
+    console.log("🎯 Detected group-based profile URL");
     const userMatch = profileUrl.match(/\/user\/([^/?]+)/);
     if (userMatch) {
-      console.log('✅ Extracted user ID from group URL:', userMatch[1]);
+      console.log("✅ Extracted user ID from group URL:", userMatch[1]);
       return userMatch[1];
     } else {
-      console.log('❌ Group URL pattern matched but failed to extract user ID');
+      console.log("❌ Group URL pattern matched but failed to extract user ID");
     }
   }
-  
+
   // Extract user ID from other Facebook URL formats
   const patterns = [
-    { pattern: /facebook\.com\/profile\.php\?id=(\d+)/, name: 'profile.php?id format' },
-    { pattern: /facebook\.com\/([a-zA-Z0-9._-]+)(?:\/|$)/, name: 'direct username format' },
-    { pattern: /facebook\.com\/people\/[^/]+\/(\d+)/, name: 'people/name/id format' }
+    {
+      pattern: /facebook\.com\/profile\.php\?id=(\d+)/,
+      name: "profile.php?id format",
+    },
+    {
+      pattern: /facebook\.com\/([a-zA-Z0-9._-]+)(?:\/|$)/,
+      name: "direct username format",
+    },
+    {
+      pattern: /facebook\.com\/people\/[^/]+\/(\d+)/,
+      name: "people/name/id format",
+    },
   ];
-  
+
   for (let i = 0; i < patterns.length; i++) {
     const { pattern, name } = patterns[i];
     console.log(`🔍 Trying pattern ${i + 1} (${name}):`, pattern);
@@ -105,15 +116,15 @@ const extractFacebookIdFromProfileUrl = (profileUrl: string): string | null => {
       console.log(`❌ Pattern ${i + 1} (${name}) no match`);
     }
   }
-  
-  console.log('❌ No patterns matched for URL:', profileUrl);
+
+  console.log("❌ No patterns matched for URL:", profileUrl);
   return null;
 };
 
 const createMessengerLink = (profileUrl: string): string | null => {
   const userId = extractFacebookIdFromProfileUrl(profileUrl);
   if (!userId) return null;
-  
+
   return `https://www.facebook.com/messages/t/${userId}`;
 };
 
@@ -127,27 +138,66 @@ export const CommentQueue: React.FC = () => {
   const [showTemplateSelector, setShowTemplateSelector] = useState<
     string | null
   >(null);
-  const [selectedImages, setSelectedImages] = useState<Record<string, string[]>>({});
-  const [showImageSelector, setShowImageSelector] = useState<Record<string, boolean>>({});
+  const [selectedImages, setSelectedImages] = useState<
+    Record<string, string[]>
+  >({});
+  const [showImageSelector, setShowImageSelector] = useState<
+    Record<string, boolean>
+  >({});
   const [imagePacks, setImagePacks] = useState<ImagePack[]>([]);
   // Smart categorization state
-  const [smartMode, setSmartMode] = useState<Record<string, boolean>>({});
-  
+  const [commentSmartMode, setCommentSmartMode] = useState<Record<string, boolean>>({});
+  const [messageSmartMode, setMessageSmartMode] = useState<Record<string, boolean>>({});
+
   // Smart Launcher state
-  const { generateMessage, isGenerating, error: messageError, clearError } = useMessageGeneration();
-  const [generatedMessages, setGeneratedMessages] = useState<Record<string, string>>({});
-  const [smartLauncherNotifications, setSmartLauncherNotifications] = useState<Record<string, string>>({});
-  const [detectedCategories, setDetectedCategories] = useState<Record<string, string[]>>({});
-  const [loadingCategories, setLoadingCategories] = useState<Record<string, boolean>>({});
+  const {
+    generateMessage,
+    isGenerating,
+    error: messageError,
+    clearError,
+  } = useMessageGeneration();
+  const [generatedMessages, setGeneratedMessages] = useState<
+    Record<string, string>
+  >({});
+  const [smartLauncherNotifications, setSmartLauncherNotifications] = useState<
+    Record<string, string>
+  >({});
+  const [detectedCategories, setDetectedCategories] = useState<
+    Record<string, string[]>
+  >({});
+  const [loadingCategories, setLoadingCategories] = useState<
+    Record<string, boolean>
+  >({});
   // Real-time text analysis state
-  const [analyzingText, setAnalyzingText] = useState<Record<string, boolean>>({});
-  const [realTimeCategories, setRealTimeCategories] = useState<Record<string, string[]>>({});
+  const [analyzingText, setAnalyzingText] = useState<Record<string, boolean>>(
+    {}
+  );
+  const [realTimeCategories, setRealTimeCategories] = useState<
+    Record<string, string[]>
+  >({});
   // Automation method preference
-  const [automationMethod, setAutomationMethod] = useState<'clipboard' | 'selenium'>('clipboard');
+  const [automationMethod, setAutomationMethod] = useState<
+    "clipboard" | "selenium"
+  >("selenium");
   // User-selectable images for Generate & Send Message
-  const [showUserImageSelector, setShowUserImageSelector] = useState<Record<string, boolean>>({});
-  const [userSelectedImages, setUserSelectedImages] = useState<Record<string, string[]>>({});
+  const [showUserImageSelector, setShowUserImageSelector] = useState<
+    Record<string, boolean>
+  >({});
+  const [userSelectedImages, setUserSelectedImages] = useState<
+    Record<string, string[]>
+  >({});
   const [availableImages, setAvailableImages] = useState<ImagePack[]>([]);
+
+  // NEW: Message preview functionality
+  const [showMessagePreview, setShowMessagePreview] = useState<
+    Record<string, boolean>
+  >({});
+  const [editableMessages, setEditableMessages] = useState<
+    Record<string, string>
+  >({});
+  const [includePostImage, setIncludePostImage] = useState<
+    Record<string, boolean>
+  >({});
 
   useEffect(() => {
     fetchComments();
@@ -179,18 +229,21 @@ export const CommentQueue: React.FC = () => {
       const response = await fetch("http://localhost:8000/api/templates");
       if (response.ok) {
         const templatesArray = await response.json();
-        const grouped = templatesArray.reduce((acc: Record<string, Template[]>, template: any) => {
-          const category = template.category || 'GENERIC';
-          if (!acc[category]) {
-            acc[category] = [];
-          }
-          acc[category].push({
-            id: template.id,
-            text: template.body,
-            post_type: category.toLowerCase()
-          });
-          return acc;
-        }, {});
+        const grouped = templatesArray.reduce(
+          (acc: Record<string, Template[]>, template: any) => {
+            const category = template.category || "GENERIC";
+            if (!acc[category]) {
+              acc[category] = [];
+            }
+            acc[category].push({
+              id: template.id,
+              text: template.body,
+              post_type: category.toLowerCase(),
+            });
+            return acc;
+          },
+          {}
+        );
         setTemplates(grouped);
       }
     } catch (error) {
@@ -200,29 +253,29 @@ export const CommentQueue: React.FC = () => {
 
   const fetchImagePacks = async () => {
     try {
-      const response = await fetch('http://localhost:8000/api/image-packs');
+      const response = await fetch("http://localhost:8000/api/image-packs");
       if (response.ok) {
         const packs = await response.json();
         setImagePacks(packs);
       } else {
-        console.error('Failed to fetch image packs');
+        console.error("Failed to fetch image packs");
       }
     } catch (error) {
-      console.error('Error loading image packs:', error);
+      console.error("Error loading image packs:", error);
     }
   };
 
   const fetchAvailableImages = async () => {
     try {
-      const response = await fetch('http://localhost:8000/api/image-packs');
+      const response = await fetch("http://localhost:8000/api/image-packs");
       if (response.ok) {
         const packs = await response.json();
         setAvailableImages(packs);
       } else {
-        console.error('Failed to fetch available images');
+        console.error("Failed to fetch available images");
       }
     } catch (error) {
-      console.error('Error loading available images:', error);
+      console.error("Error loading available images:", error);
     }
   };
 
@@ -245,8 +298,8 @@ export const CommentQueue: React.FC = () => {
         console.log("✅ Comment approved successfully");
         setEditingComment(null);
         setEditedText("");
-        setSelectedImages(prev => ({ ...prev, [commentId]: [] }));
-        setShowImageSelector(prev => ({ ...prev, [commentId]: false }));
+        setSelectedImages((prev) => ({ ...prev, [commentId]: [] }));
+        setShowImageSelector((prev) => ({ ...prev, [commentId]: false }));
         fetchComments();
       } else {
         const error = await response.json();
@@ -277,123 +330,146 @@ export const CommentQueue: React.FC = () => {
     }
   };
 
-  const handleSmartLauncher = async (commentId: string, comment: QueuedComment) => {
-    console.log(`🚀 Enhanced Smart Launcher initiated for comment: ${commentId} using ${automationMethod} method`);
-    
+  const handleSmartLauncher = async (
+    commentId: string,
+    comment: QueuedComment
+  ) => {
+    console.log(
+      `🚀 Enhanced Smart Launcher initiated for comment: ${commentId} using ${automationMethod} method`
+    );
+
     try {
       // Clear any previous notifications
-      setSmartLauncherNotifications(prev => ({ ...prev, [commentId]: '' }));
+      setSmartLauncherNotifications((prev) => ({ ...prev, [commentId]: "" }));
       clearError();
 
       // Step 1: Generate the message
       const result = await generateMessage(commentId);
       if (!result) {
-        throw new Error('Failed to generate message');
+        throw new Error("Failed to generate message");
       }
 
-      console.log('✅ Message generated:', {
+      console.log("✅ Message generated:", {
         method: result.generation_method,
         chars: result.character_count,
-        time: `${result.generation_time_seconds}s`
+        time: `${result.generation_time_seconds}s`,
       });
 
       // Store the generated message
-      setGeneratedMessages(prev => ({ ...prev, [commentId]: result.message }));
+      setGeneratedMessages((prev) => ({
+        ...prev,
+        [commentId]: result.message,
+      }));
 
       // Step 2: Execute Enhanced Smart Launcher
       if (!result.messenger_url) {
-        throw new Error('No Messenger URL available');
+        throw new Error("No Messenger URL available");
       }
 
       // Prepare image URLs - combine post_images, screenshot, and user-selected images
       const imageUrls: string[] = [];
       const userImages = userSelectedImages[commentId] || [];
-      
-      console.log('📸 Image data from API:', {
+
+      console.log("📸 Image data from API:", {
         post_images: result.post_images,
-        post_screenshot: result.post_screenshot ? 'Present (base64)' : 'None',
+        post_screenshot: result.post_screenshot ? "Present (base64)" : "None",
         has_images: result.has_images,
-        user_selected: userImages.length
+        user_selected: userImages.length,
       });
-      
+
       // Add AI-detected images first
       if (result.post_images && result.post_images.length > 0) {
         imageUrls.push(...result.post_images);
-        console.log(`✅ Added ${result.post_images.length} AI-detected post images`);
+        console.log(
+          `✅ Added ${result.post_images.length} AI-detected post images`
+        );
       }
       if (result.post_screenshot && !imageUrls.length) {
         // Use screenshot as fallback if no other images
         imageUrls.push(result.post_screenshot);
-        console.log('✅ Using screenshot as fallback');
+        console.log("✅ Using screenshot as fallback");
       }
-      
+
       // Add user-selected images
       if (userImages.length > 0) {
         // Convert relative paths to absolute local paths for Selenium file upload
-        const userImageUrls = userImages.map(img => {
-          if (img.startsWith('http')) return img;
-          if (img.startsWith('C:')) return img; // Already absolute path
+        const userImageUrls = userImages.map((img) => {
+          if (img.startsWith("http")) return img;
+          if (img.startsWith("C:")) return img; // Already absolute path
           // Convert relative path to absolute local path
-          return img.replace(/^uploads\//, 'C:/Users/petem/personal/gem-approval/uploads/');
+          return img.replace(
+            /^uploads\//,
+            "C:/Users/petem/personal/gem-approval/uploads/"
+          );
         });
         imageUrls.push(...userImageUrls);
         console.log(`✅ Added ${userImages.length} user-selected images`);
-        console.log('🔍 User image paths:', userImageUrls);
+        console.log("🔍 User image paths:", userImageUrls);
       }
-      
-      console.log(`📷 Total images to process: ${imageUrls.length} (${result.post_images?.length || 0} AI + ${userImages.length} user-selected)`);
+
+      console.log(
+        `📷 Total images to process: ${imageUrls.length} (${
+          result.post_images?.length || 0
+        } AI + ${userImages.length} user-selected)`
+      );
 
       // Check for debug mode (set window.DEBUG_CLIPBOARD = true in console)
       const debugMode = (window as any).DEBUG_CLIPBOARD === true;
-      
+
       // Use Enhanced Smart Launcher with selected method
       const launcherResult = await executeEnhancedSmartLauncher(
-        result.message, 
+        result.message,
         result.messenger_url,
         imageUrls,
         {
           method: automationMethod,
           debugMode: debugMode,
-          sessionId: `user_${commentId}_${Date.now()}`
+          sessionId: `user_${commentId}_${Date.now()}`,
         }
       );
-      
+
       // Step 3: Show user feedback
-      setSmartLauncherNotifications(prev => ({ 
-        ...prev, 
-        [commentId]: launcherResult.message 
+      setSmartLauncherNotifications((prev) => ({
+        ...prev,
+        [commentId]: launcherResult.message,
       }));
 
       // Auto-clear notification after longer time for Selenium (to see duration)
-      const clearDelay = automationMethod === 'selenium' ? 10000 : 8000;
+      const clearDelay = automationMethod === "selenium" ? 10000 : 8000;
       setTimeout(() => {
-        setSmartLauncherNotifications(prev => ({ ...prev, [commentId]: '' }));
+        setSmartLauncherNotifications((prev) => ({ ...prev, [commentId]: "" }));
       }, clearDelay);
-
     } catch (error) {
-      console.error('❌ Enhanced Smart Launcher failed:', error);
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      setSmartLauncherNotifications(prev => ({ 
-        ...prev, 
-        [commentId]: `❌ Error: ${errorMessage}` 
+      console.error("❌ Enhanced Smart Launcher failed:", error);
+      const errorMessage =
+        error instanceof Error ? error.message : "Unknown error";
+      setSmartLauncherNotifications((prev) => ({
+        ...prev,
+        [commentId]: `❌ Error: ${errorMessage}`,
       }));
-      
+
       // Clear error notification after 5 seconds
       setTimeout(() => {
-        setSmartLauncherNotifications(prev => ({ ...prev, [commentId]: '' }));
+        setSmartLauncherNotifications((prev) => ({ ...prev, [commentId]: "" }));
       }, 5000);
     }
   };
 
   const startEditing = (comment: QueuedComment) => {
     setEditingComment(comment.id);
-    
+
     let commentToEdit = comment.generated_comment;
-    
-    if (comment.post_author && comment.generated_comment.includes("Hi there!")) {
-      commentToEdit = personalizeTemplate(comment.generated_comment.replace("Hi there!", "Hi {{author_name}}!"), comment.post_author);
+
+    if (
+      comment.post_author &&
+      comment.generated_comment.includes("Hi there!")
+    ) {
+      commentToEdit = personalizeTemplate(
+        comment.generated_comment.replace("Hi there!", "Hi {{author_name}}!"),
+        comment.post_author
+      );
     }
-    
+
     setEditedText(commentToEdit);
     setShowTemplateSelector(comment.id);
     setSelectedTemplate("");
@@ -407,158 +483,421 @@ export const CommentQueue: React.FC = () => {
   };
 
   const handleImageSelect = (commentId: string, filename: string) => {
-    setSelectedImages(prev => {
+    setSelectedImages((prev) => {
       const currentImages = prev[commentId] || [];
       const newImages = currentImages.includes(filename)
-        ? currentImages.filter(img => img !== filename)
+        ? currentImages.filter((img) => img !== filename)
         : [...currentImages, filename];
       return { ...prev, [commentId]: newImages };
     });
   };
 
   const toggleImageSelector = (commentId: string) => {
-    setShowImageSelector(prev => ({
+    setShowImageSelector((prev) => ({
       ...prev,
-      [commentId]: !prev[commentId]
+      [commentId]: !prev[commentId],
     }));
-    
+
     if (!showImageSelector[commentId] && !detectedCategories[commentId]) {
       loadDetectedCategories(commentId);
     }
   };
-  
+
   const loadDetectedCategories = async (commentId: string) => {
-    setLoadingCategories(prev => ({ ...prev, [commentId]: true }));
+    setLoadingCategories((prev) => ({ ...prev, [commentId]: true }));
     try {
-      const response = await fetch(`http://localhost:8000/api/comments/${commentId}/categories`);
+      const response = await fetch(
+        `http://localhost:8000/api/comments/${commentId}/categories`
+      );
       if (response.ok) {
         const data = await response.json();
-        setDetectedCategories(prev => ({
+        setDetectedCategories((prev) => ({
           ...prev,
-          [commentId]: data.categories || []
+          [commentId]: data.categories || [],
         }));
-        if (data.categories && data.categories.length > 0) {
-          setSmartMode(prev => ({ ...prev, [commentId]: true }));
-        }
       }
     } catch (error) {
-      console.error(`Error loading categories for comment ${commentId}:`, error);
+      console.error(
+        `Error loading categories for comment ${commentId}:`,
+        error
+      );
     } finally {
-      setLoadingCategories(prev => ({ ...prev, [commentId]: false }));
+      setLoadingCategories((prev) => ({ ...prev, [commentId]: false }));
     }
   };
-  
+
   const handleBulkImageSelect = (commentId: string, filenames: string[]) => {
-    setSelectedImages(prev => ({
+    setSelectedImages((prev) => ({
       ...prev,
-      [commentId]: filenames
+      [commentId]: filenames,
     }));
   };
 
   const toggleUserImageSelector = (commentId: string) => {
-    setShowUserImageSelector(prev => ({
+    setShowUserImageSelector((prev) => ({
       ...prev,
-      [commentId]: !prev[commentId]
+      [commentId]: !prev[commentId],
     }));
   };
 
+  // NEW: Generate message only (no sending) and show preview
+  const handleGenerateMessageOnly = async (commentId: string) => {
+    console.log(`🚀 BUTTON CLICKED! Generating message only for: ${commentId}`);
+
+    try {
+      // Clear any previous notifications
+      setSmartLauncherNotifications((prev) => ({ ...prev, [commentId]: "" }));
+      clearError();
+
+      // Generate the message using existing logic
+      const result = await generateMessage(commentId);
+      if (!result) {
+        throw new Error("Failed to generate message");
+      }
+
+      console.log("✅ Message generated for preview:", {
+        method: result.generation_method,
+        chars: result.character_count,
+        time: `${result.generation_time_seconds}s`,
+      });
+
+      // Store the generated message
+      setGeneratedMessages((prev) => ({
+        ...prev,
+        [commentId]: result.message,
+      }));
+      setEditableMessages((prev) => ({ ...prev, [commentId]: result.message }));
+
+      // Show the preview box
+      console.log("🔍 DEBUG: Setting preview box to open for", commentId);
+      setShowMessagePreview((prev) => {
+        const newState = { ...prev, [commentId]: true };
+        console.log("🔍 DEBUG: Preview state after update:", newState);
+        return newState;
+      });
+    } catch (error) {
+      console.error("❌ Message generation failed:", error);
+      const errorMessage =
+        error instanceof Error ? error.message : "Unknown error";
+      setSmartLauncherNotifications((prev) => ({
+        ...prev,
+        [commentId]: `❌ Error: ${errorMessage}`,
+      }));
+
+      // Clear error notification after 5 seconds
+      setTimeout(() => {
+        setSmartLauncherNotifications((prev) => ({ ...prev, [commentId]: "" }));
+      }, 5000);
+    }
+  };
+
+  // NEW: Send message from preview box
+  const handleSendMessageFromPreview = async (
+    commentId: string,
+    comment: QueuedComment
+  ) => {
+    console.log(`📤 Sending message from preview for: ${commentId}`);
+
+    try {
+      // Get the final edited message
+      const finalMessage =
+        editableMessages[commentId] || generatedMessages[commentId];
+      if (!finalMessage) {
+        throw new Error("No message to send");
+      }
+
+      // Prepare image URLs - POST IMAGE FIRST, then user-selected images
+      const imageUrls: string[] = [];
+
+      // Add post images FIRST if toggle is enabled
+      if (
+        includePostImage[commentId] &&
+        comment.post_images &&
+        comment.post_images.trim().length > 0
+      ) {
+        try {
+          // Parse post_images the same way renderPostImages does
+          let parsedImages: string[] = [];
+          const postImagesStr = comment.post_images.trim();
+          
+          if (postImagesStr.startsWith('[') || postImagesStr.startsWith('{')) {
+            // JSON array or object format
+            const parsed = JSON.parse(postImagesStr);
+            parsedImages = Array.isArray(parsed) ? parsed : [parsed];
+          } else {
+            // Single image URL as string
+            parsedImages = [postImagesStr];
+          }
+          
+          // Filter out empty/null images and add to the beginning
+          const validImages = parsedImages.filter((url) => url && url.trim() !== '');
+          if (validImages.length > 0) {
+            imageUrls.push(...validImages);
+          }
+        } catch (parseError) {
+          // Fallback: treat as single URL string
+          imageUrls.push(comment.post_images);
+        }
+      }
+
+      // Add user-selected images AFTER post image
+      const userImages = userSelectedImages[commentId] || [];
+      if (userImages.length > 0) {
+        const userImageUrls = userImages.map((img) => {
+          if (img.startsWith("http")) return img;
+          if (img.startsWith("C:")) return img;
+          return img.replace(
+            /^uploads\//,
+            "C:/Users/petem/personal/gem-approval/uploads/"
+          );
+        });
+        imageUrls.push(...userImageUrls);
+      }
+
+      // Create messenger URL
+      const messengerUrl = createMessengerLink(comment.post_author_url || "");
+      if (!messengerUrl) {
+        throw new Error("No Messenger URL available");
+      }
+
+      // Check for debug mode
+      const debugMode = (window as any).DEBUG_CLIPBOARD === true;
+
+      // Use existing Enhanced Smart Launcher
+      const launcherResult = await executeEnhancedSmartLauncher(
+        finalMessage,
+        messengerUrl,
+        imageUrls,
+        {
+          method: automationMethod,
+          debugMode: debugMode,
+          sessionId: `preview_${commentId}_${Date.now()}`,
+        }
+      );
+
+      // Show success feedback
+      setSmartLauncherNotifications((prev) => ({
+        ...prev,
+        [commentId]: launcherResult.message,
+      }));
+
+      // Close the preview box
+      setShowMessagePreview((prev) => ({ ...prev, [commentId]: false }));
+
+      // Auto-clear notification
+      const clearDelay = automationMethod === "selenium" ? 10000 : 8000;
+      setTimeout(() => {
+        setSmartLauncherNotifications((prev) => ({ ...prev, [commentId]: "" }));
+      }, clearDelay);
+    } catch (error) {
+      console.error("❌ Send message from preview failed:", error);
+      const errorMessage =
+        error instanceof Error ? error.message : "Unknown error";
+      setSmartLauncherNotifications((prev) => ({
+        ...prev,
+        [commentId]: `❌ Error: ${errorMessage}`,
+      }));
+
+      // Clear error notification after 5 seconds
+      setTimeout(() => {
+        setSmartLauncherNotifications((prev) => ({ ...prev, [commentId]: "" }));
+      }, 5000);
+    }
+  };
+
   const handleUserImageSelect = (commentId: string, filename: string) => {
-    setUserSelectedImages(prev => {
+    setUserSelectedImages((prev) => {
       const currentImages = prev[commentId] || [];
       const newImages = currentImages.includes(filename)
-        ? currentImages.filter(img => img !== filename)
+        ? currentImages.filter((img) => img !== filename)
         : [...currentImages, filename];
       return { ...prev, [commentId]: newImages };
     });
   };
 
-  const handleUserBulkImageSelect = (commentId: string, filenames: string[]) => {
-    setUserSelectedImages(prev => ({
+  const handleUserBulkImageSelect = (
+    commentId: string,
+    filenames: string[]
+  ) => {
+    setUserSelectedImages((prev) => ({
       ...prev,
-      [commentId]: filenames
+      [commentId]: filenames,
     }));
   };
-  
-  const toggleSmartMode = (commentId: string, enabled: boolean) => {
-    setSmartMode(prev => ({ ...prev, [commentId]: enabled }));
-    
+
+  const toggleCommentSmartMode = (commentId: string, enabled: boolean) => {
+    setCommentSmartMode((prev) => ({ ...prev, [commentId]: enabled }));
+
     if (enabled) {
       if (editingComment === commentId && editedText.length >= 10) {
-        analyzeEditedText(commentId, editedText);
+        analyzeCommentText(commentId, editedText);
       }
-      
+
+      // Auto-select images for comment generation only
       if (detectedCategories[commentId]?.length > 0) {
-        const suggested = getSuggestedImages(detectedCategories[commentId], imagePacks, 2);
-        setSelectedImages(prev => ({
+        const suggested = getSuggestedImages(
+          detectedCategories[commentId],
+          imagePacks,
+          2
+        );
+        setSelectedImages((prev) => ({
           ...prev,
-          [commentId]: suggested
+          [commentId]: suggested,
         }));
       }
     } else {
-      setRealTimeCategories(prev => ({ ...prev, [commentId]: [] }));
+      setRealTimeCategories((prev) => ({ ...prev, [commentId]: [] }));
     }
   };
 
-  const analyzeEditedText = useCallback(
+  const toggleMessageSmartMode = (commentId: string, enabled: boolean) => {
+    setMessageSmartMode((prev) => ({ ...prev, [commentId]: enabled }));
+
+    if (enabled) {
+      const currentMessage = editableMessages[commentId];
+      if (currentMessage && currentMessage.length >= 10) {
+        analyzeMessageText(commentId, currentMessage);
+      }
+
+      // Auto-select images for message generation only
+      if (detectedCategories[commentId]?.length > 0) {
+        const suggested = getSuggestedImages(
+          detectedCategories[commentId],
+          imagePacks,
+          2
+        );
+        setUserSelectedImages((prev) => ({
+          ...prev,
+          [commentId]: suggested,
+        }));
+      }
+    }
+    // Note: Don't clear realTimeCategories here as comment section might still be using it
+  };
+
+  const analyzeCommentText = useCallback(
     debounce(async (commentId: string, text: string) => {
       if (!text || text.length < 10) {
-        setRealTimeCategories(prev => ({ ...prev, [commentId]: [] }));
+        setRealTimeCategories((prev) => ({ ...prev, [commentId]: [] }));
         return;
       }
 
-      setAnalyzingText(prev => ({ ...prev, [commentId]: true }));
+      setAnalyzingText((prev) => ({ ...prev, [commentId]: true }));
       try {
-        const response = await fetch('http://localhost:8000/api/analyze-text', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text })
+        const response = await fetch("http://localhost:8000/api/analyze-text", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
         });
-        
+
         if (response.ok) {
           const data = await response.json();
-          setRealTimeCategories(prev => ({ 
-            ...prev, 
-            [commentId]: data.categories || [] 
+          const categories = data.categories || [];
+          setRealTimeCategories((prev) => ({
+            ...prev,
+            [commentId]: categories,
           }));
+
+          // Auto-select suggested images for comment generation only
+          if (categories.length > 0) {
+            const suggested = getSuggestedImages(categories, imagePacks, 2);
+            setSelectedImages((prev) => ({
+              ...prev,
+              [commentId]: suggested,
+            }));
+          }
         }
       } catch (error) {
-        console.error('Real-time text analysis failed:', error);
-        setRealTimeCategories(prev => ({ ...prev, [commentId]: [] }));
+        console.error("Real-time comment text analysis failed:", error);
+        setRealTimeCategories((prev) => ({ ...prev, [commentId]: [] }));
       } finally {
-        setAnalyzingText(prev => ({ ...prev, [commentId]: false }));
+        setAnalyzingText((prev) => ({ ...prev, [commentId]: false }));
       }
     }, 800),
-    []
+    [imagePacks]
+  );
+
+  const analyzeMessageText = useCallback(
+    debounce(async (commentId: string, text: string) => {
+      if (!text || text.length < 10) {
+        return;
+      }
+
+      setAnalyzingText((prev) => ({ ...prev, [commentId]: true }));
+      try {
+        const response = await fetch("http://localhost:8000/api/analyze-text", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          const categories = data.categories || [];
+          
+          // Auto-select suggested images for message generation only
+          if (categories.length > 0) {
+            const suggested = getSuggestedImages(categories, imagePacks, 2);
+            setUserSelectedImages((prev) => ({
+              ...prev,
+              [commentId]: suggested,
+            }));
+          }
+        }
+      } catch (error) {
+        console.error("Real-time message text analysis failed:", error);
+      } finally {
+        setAnalyzingText((prev) => ({ ...prev, [commentId]: false }));
+      }
+    }, 800),
+    [imagePacks]
   );
 
   const handleTextEdit = (commentId: string, text: string) => {
     setEditedText(text);
-    
-    if (smartMode[commentId]) {
-      analyzeEditedText(commentId, text);
+
+    if (commentSmartMode[commentId]) {
+      analyzeCommentText(commentId, text);
     }
   };
 
-  const personalizeTemplate = (templateText: string, authorName: string | undefined): string => {
+  const personalizeTemplate = (
+    templateText: string,
+    authorName: string | undefined
+  ): string => {
     if (!authorName) {
       return templateText.replace(/\{\{author_name\}\}/g, "there");
     }
 
     const nameParts = authorName.split(" ");
-    const titles = ['dr.', 'dr', 'mr.', 'mr', 'mrs.', 'mrs', 'ms.', 'ms', 'miss', 'prof.', 'prof', 'rev.', 'rev'];
-    
+    const titles = [
+      "dr.",
+      "dr",
+      "mr.",
+      "mr",
+      "mrs.",
+      "mrs",
+      "ms.",
+      "ms",
+      "miss",
+      "prof.",
+      "prof",
+      "rev.",
+      "rev",
+    ];
+
     let firstName = nameParts[0];
-    
+
     for (let i = 0; i < nameParts.length; i++) {
-      const part = nameParts[i].toLowerCase().replace(/[.,]/g, '');
+      const part = nameParts[i].toLowerCase().replace(/[.,]/g, "");
       if (!titles.includes(part)) {
         firstName = nameParts[i];
         break;
       }
     }
-    
-    firstName = firstName.replace(/[.,]/g, '');
-    
+
+    firstName = firstName.replace(/[.,]/g, "");
+
     return templateText.replace(/\{\{author_name\}\}/g, firstName || "there");
   };
 
@@ -567,7 +906,10 @@ export const CommentQueue: React.FC = () => {
     const template = allTemplates.find((t) => t.id === templateId);
 
     if (template) {
-      const personalizedText = personalizeTemplate(template.text, comment.post_author);
+      const personalizedText = personalizeTemplate(
+        template.text,
+        comment.post_author
+      );
       setEditedText(personalizedText);
       setSelectedTemplate(templateId);
     }
@@ -586,9 +928,12 @@ export const CommentQueue: React.FC = () => {
     }
   };
 
-  const renderPostImages = (comment: QueuedComment, isCompact: boolean = false) => {
+  const renderPostImages = (
+    comment: QueuedComment,
+    isCompact: boolean = false
+  ) => {
     let imageUrls: string[] = [];
-    
+
     if (comment.post_images && comment.post_images.trim() !== "") {
       try {
         const parsed = JSON.parse(comment.post_images);
@@ -597,14 +942,14 @@ export const CommentQueue: React.FC = () => {
         imageUrls = [comment.post_images];
       }
     }
-    
-    imageUrls = imageUrls.filter(url => url && url.trim() !== "");
-    
+
+    imageUrls = imageUrls.filter((url) => url && url.trim() !== "");
+
     if (imageUrls.length === 0) return null;
-    
+
     const maxImages = isCompact ? 2 : 3;
     const imageSize = isCompact ? "w-16 h-16" : "w-20 h-20";
-    
+
     return (
       <div className="mb-4">
         <div className="flex gap-2 flex-wrap">
@@ -612,22 +957,42 @@ export const CommentQueue: React.FC = () => {
             <img
               key={imgIndex}
               src={(() => {
-                if (imageUrl.startsWith("http") || imageUrl.startsWith("data:")) return imageUrl;
-                if (imageUrl.startsWith("iVBORw0KGgo")) return `data:image/png;base64,${imageUrl}`;
-                if (imageUrl.startsWith("/9j/")) return `data:image/jpeg;base64,${imageUrl}`;
-                if (!imageUrl.startsWith("http")) return `data:image/jpeg;base64,${imageUrl}`;
+                if (imageUrl.startsWith("http") || imageUrl.startsWith("data:"))
+                  return imageUrl;
+                if (imageUrl.startsWith("iVBORw0KGgo"))
+                  return `data:image/png;base64,${imageUrl}`;
+                if (imageUrl.startsWith("/9j/"))
+                  return `data:image/jpeg;base64,${imageUrl}`;
+                if (!imageUrl.startsWith("http"))
+                  return `data:image/jpeg;base64,${imageUrl}`;
                 return imageUrl;
               })()}
               alt={`Post image ${imgIndex + 1}`}
               className={`${imageSize} rounded-lg border-2 border-white shadow-sm object-cover hover:scale-105 transition-transform duration-200 cursor-pointer`}
               onError={(e) => {
                 const target = e.target as HTMLImageElement;
-                target.src = `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='${isCompact ? '64' : '80'}' height='${isCompact ? '64' : '80'}' viewBox='0 0 ${isCompact ? '64' : '80'} ${isCompact ? '64' : '80'}'%3E%3Crect width='${isCompact ? '64' : '80'}' height='${isCompact ? '64' : '80'}' fill='%23f3f4f6'/%3E%3Ctext x='${isCompact ? '32' : '40'}' y='${isCompact ? '36' : '45'}' font-family='Arial' font-size='${isCompact ? '8' : '10'}' fill='%23666' text-anchor='middle'%3ENo Image%3C/text%3E%3C/svg%3E`;
+                target.src = `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='${
+                  isCompact ? "64" : "80"
+                }' height='${isCompact ? "64" : "80"}' viewBox='0 0 ${
+                  isCompact ? "64" : "80"
+                } ${isCompact ? "64" : "80"}'%3E%3Crect width='${
+                  isCompact ? "64" : "80"
+                }' height='${
+                  isCompact ? "64" : "80"
+                }' fill='%23f3f4f6'/%3E%3Ctext x='${
+                  isCompact ? "32" : "40"
+                }' y='${
+                  isCompact ? "36" : "45"
+                }' font-family='Arial' font-size='${
+                  isCompact ? "8" : "10"
+                }' fill='%23666' text-anchor='middle'%3ENo Image%3C/text%3E%3C/svg%3E`;
               }}
             />
           ))}
           {imageUrls.length > maxImages && (
-            <div className={`${imageSize} rounded-lg border-2 border-dashed border-slate-300 bg-slate-100 flex items-center justify-center text-xs font-medium text-slate-600`}>
+            <div
+              className={`${imageSize} rounded-lg border-2 border-dashed border-slate-300 bg-slate-100 flex items-center justify-center text-xs font-medium text-slate-600`}
+            >
               +{imageUrls.length - maxImages}
             </div>
           )}
@@ -657,7 +1022,8 @@ export const CommentQueue: React.FC = () => {
           Comment Approval Queue
         </CardTitle>
         <CardDescription className="text-slate-600 font-medium">
-          {comments.length} {comments.length === 1 ? 'comment' : 'comments'} waiting for approval
+          {comments.length} {comments.length === 1 ? "comment" : "comments"}{" "}
+          waiting for approval
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -666,524 +1032,221 @@ export const CommentQueue: React.FC = () => {
             <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-gradient-to-br from-slate-100 to-slate-200 flex items-center justify-center">
               <MessageCircle className="h-8 w-8 text-slate-400" />
             </div>
-            <p className="text-slate-500 text-lg font-medium">No comments in queue</p>
-            <p className="text-slate-400 text-sm mt-2">New comments will appear here when they're ready for approval</p>
+            <p className="text-slate-500 text-lg font-medium">
+              No comments in queue
+            </p>
+            <p className="text-slate-400 text-sm mt-2">
+              New comments will appear here when they're ready for approval
+            </p>
           </div>
         ) : (
           <div className="space-y-6">
             {comments.map((comment, index) => (
-              <Card 
-                key={comment.id} 
+              <Card
+                key={comment.id}
                 className="group relative overflow-hidden bg-gradient-to-br from-white via-slate-50/50 to-white border-0 shadow-lg hover:shadow-2xl transition-all duration-500 hover:scale-[1.02] backdrop-blur-sm"
               >
                 <div className="absolute inset-0 bg-gradient-to-r from-blue-500/5 via-purple-500/5 to-indigo-500/5 opacity-0 group-hover:opacity-100 transition-all duration-500" />
                 <div className="absolute left-0 top-0 h-full w-1.5 bg-gradient-to-b from-blue-500 via-purple-500 to-indigo-600 group-hover:w-2 transition-all duration-300" />
                 <CardContent className="relative pt-6 z-10">
-                  <div className="flex items-start justify-between mb-4">
-                    <div className="flex-1">
-                      {editingComment === comment.id ? (
-                        // UNIFIED EDITING COMPONENT
-                        <div className="border-0 rounded-xl bg-gradient-to-br from-white via-slate-50/50 to-white shadow-lg backdrop-blur-sm overflow-hidden">
-                          {/* Post Information Section */}
-                          <div className="p-4 border-b border-slate-200/50 bg-gradient-to-r from-slate-50/30 to-white">
-                            <div className="flex items-center gap-3 mb-4">
-                              <Badge className={`${getPostTypeColor(comment.post_type)} font-semibold px-3 py-1 rounded-full shadow-sm border-0`}>
-                                {comment.post_type.toUpperCase()}
-                              </Badge>
-                              {comment.post_author && (
-                                <span className="text-sm font-medium text-slate-600 bg-slate-100 px-3 py-1 rounded-full">
-                                  by {comment.post_author}
-                                </span>
-                              )}
-                            </div>
-                            
-                            {renderPostImages(comment, true)}
-                            
-                            <div className="mb-4">
-                              <h5 className="text-xs font-semibold text-slate-600 mb-2 flex items-center gap-2">
-                                <div className="w-0.5 h-3 bg-gradient-to-b from-blue-500 to-indigo-600 rounded-full"></div>
-                                Original Post
-                              </h5>
-                              <p className="text-sm leading-relaxed text-slate-700 bg-white/80 p-3 rounded-lg border border-slate-200/30 line-clamp-3">
-                                {comment.post_text}
-                              </p>
-                            </div>
-                          </div>
-                          
-                          {/* Template Selection */}
-                          <div className="p-4 border-b border-slate-200/50">
-                            <label className="text-sm font-semibold text-slate-700 block mb-3 flex items-center gap-2">
-                              <div className="w-1 h-3 bg-gradient-to-b from-emerald-500 to-green-600 rounded-full"></div>
-                              Choose Template (Optional)
-                            </label>
-                            <Select
-                              value={selectedTemplate}
-                              onValueChange={(value) => handleTemplateSelect(value, comment)}
-                            >
-                              <SelectTrigger className="w-full">
-                                <SelectValue placeholder="Select a template or write custom comment below..." />
-                              </SelectTrigger>
-                              <SelectContent>
-                                {Object.entries(templates).map(
-                                  ([postType, templateList]) => (
-                                    <React.Fragment key={postType}>
-                                      <div className="px-2 py-1 text-xs font-semibold text-gray-500 uppercase">
-                                        {postType} Templates
-                                      </div>
-                                      {templateList.map((template) => {
-                                        const personalizedPreview = personalizeTemplate(template.text, comment.post_author);
-                                        return (
-                                          <SelectItem key={template.id} value={template.id}>
-                                            {personalizedPreview.substring(0, 80)}...
-                                          </SelectItem>
-                                        );
-                                      })}
-                                    </React.Fragment>
-                                  )
-                                )}
-                              </SelectContent>
-                            </Select>
-                          </div>
-                          
-                          {/* Comment Editor Section */}
-                          <div className="p-4 border-b border-slate-200/50 bg-gradient-to-r from-white to-slate-50/30">
-                            <div className="flex items-center justify-between mb-3">
-                              <label className="text-sm font-semibold text-slate-700 flex items-center gap-2">
-                                <div className="w-1 h-3 bg-gradient-to-b from-blue-500 to-indigo-600 rounded-full"></div>
-                                Custom Comment
-                              </label>
-                              {analyzingText[comment.id] && (
-                                <div className="flex items-center gap-2 text-sm text-purple-600 bg-purple-50 px-3 py-1.5 rounded-full animate-pulse">
-                                  <div className="animate-spin h-4 w-4 border-2 border-purple-600 border-t-transparent rounded-full"></div>
-                                  <span className="font-medium">Analyzing...</span>
-                                </div>
-                              )}
-                            </div>
-
-                            {/* Real-time detected categories */}
-                            {smartMode[comment.id] && realTimeCategories[comment.id]?.length > 0 && (
-                              <div className="mb-3 p-3 bg-gradient-to-r from-purple-50/50 to-indigo-50/50 rounded-lg border border-purple-200/30">
-                                <div className="flex items-center gap-2 mb-2">
-                                  <span className="text-sm font-semibold text-purple-700">Live Detected Categories:</span>
-                                </div>
-                                <div className="flex flex-wrap gap-2">
-                                  {realTimeCategories[comment.id].map(category => (
-                                    <Badge key={category} className="text-xs bg-gradient-to-r from-purple-500 to-indigo-600 text-white border-0 shadow-sm px-2 py-1 rounded-full font-medium">
-                                      <Sparkles className="h-3 w-3 mr-1" />
-                                      {category}
-                                    </Badge>
-                                  ))}
-                                </div>
-                              </div>
-                            )}
-
-                            <Textarea
-                              value={editedText}
-                              onChange={(e) => handleTextEdit(comment.id, e.target.value)}
-                              className="min-h-[120px] resize-none border-0 bg-white/80 backdrop-blur-sm shadow-inner rounded-lg focus:ring-2 focus:ring-blue-500/20 focus:bg-white transition-all duration-200"
-                              placeholder="Write your comment here... 
-
-💡 Tip: Enable Smart Mode for real-time category detection and image suggestions!"
-                            />
-                          </div>
-
-                          {/* Selected Images Preview */}
-                          {(selectedImages[comment.id] || []).length > 0 && (
-                            <div className="px-4 py-3 border-b border-slate-200/50 bg-gradient-to-r from-blue-50/30 to-indigo-50/30">
-                              <div className="flex items-center gap-3 mb-3">
-                                <div className="p-1.5 rounded-lg bg-gradient-to-r from-blue-500 to-indigo-600 text-white">
-                                  <Image className="h-4 w-4" />
-                                </div>
-                                <span className="text-sm font-semibold text-slate-700">
-                                  Attached Images ({(selectedImages[comment.id] || []).length})
-                                </span>
-                              </div>
-                              <div className="flex gap-2 flex-wrap">
-                                {(selectedImages[comment.id] || []).map((image, index) => (
-                                  <div key={index} className="relative group">
-                                    <img
-                                      src={image.startsWith('http') ? image : `http://localhost:8000/${image}`}
-                                      alt={image}
-                                      className="w-16 h-16 object-cover rounded-lg border-2 border-white shadow-md bg-white group-hover:scale-105 transition-transform duration-200"
-                                      onError={(e) => {
-                                        const target = e.target as HTMLImageElement;
-                                        target.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='64' height='64' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' fill='%23f3f4f6'/%3E%3Ctext x='32' y='36' font-family='Arial' font-size='8' fill='%23666' text-anchor='middle'%3ENo Image%3C/text%3E%3C/svg%3E";
-                                      }}
-                                    />
-                                    <Button
-                                      variant="destructive"
-                                      size="sm"
-                                      onClick={() => handleImageSelect(comment.id, image)}
-                                      className="absolute -top-1 -right-1 h-6 w-6 p-0 opacity-0 group-hover:opacity-100 transition-all duration-200 text-xs bg-red-500 hover:bg-red-600 shadow-lg rounded-full border-2 border-white"
-                                    >
-                                      ×
-                                    </Button>
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
+                  {/* Post Content Section - Full Width */}
+                  <div className="mb-6">
+                    <Card className="bg-gradient-to-br from-purple-50/30 to-indigo-50/30 border-l-4 border-l-purple-500 shadow-lg">
+                      <CardContent className="p-4">
+                        {/* Header with Post Info Only */}
+                        <div className="flex items-center gap-3 mb-4">
+                          <Badge
+                            className={`${getPostTypeColor(
+                              comment.post_type
+                            )} font-semibold px-3 py-1 rounded-full shadow-sm border-0`}
+                          >
+                            {comment.post_type.toUpperCase()}
+                          </Badge>
+                          {comment.post_author && (
+                            <span className="text-sm font-medium text-slate-600 bg-white/60 px-3 py-1 rounded-full">
+                              by {comment.post_author}
+                            </span>
                           )}
-
-                          {/* Inline Expandable Gallery */}
-                          {showImageSelector[comment.id] && (
-                            <div className="border-b border-slate-200/50 bg-gradient-to-br from-slate-50/50 to-white">
-                              <div className="p-4">
-                                <div className="flex items-center justify-between mb-4">
-                                  <div className="flex items-center gap-4">
-                                    <h5 className="font-semibold text-sm text-slate-700 flex items-center gap-2">
-                                      <div className="w-1 h-4 bg-gradient-to-b from-blue-500 to-indigo-600 rounded-full"></div>
-                                      Add Images
-                                    </h5>
-                                    
-                                    {/* Smart Mode Toggle */}
-                                    <div className="flex items-center gap-2 px-3 py-2 bg-gradient-to-r from-purple-50 to-indigo-50 rounded-lg border border-purple-200/50">
-                                      <Switch
-                                        id={`smart-mode-${comment.id}`}
-                                        checked={smartMode[comment.id] || false}
-                                        onCheckedChange={(checked) => toggleSmartMode(comment.id, checked)}
-                                        disabled={loadingCategories[comment.id]}
-                                        className="data-[state=checked]:bg-gradient-to-r data-[state=checked]:from-purple-500 data-[state=checked]:to-indigo-600"
-                                      />
-                                      <Label htmlFor={`smart-mode-${comment.id}`} className="text-sm font-medium cursor-pointer text-slate-700">
-                                        <span className="flex items-center gap-2">
-                                          <Sparkles className="h-4 w-4 text-purple-500" />
-                                          Smart Mode
-                                        </span>
-                                      </Label>
-                                    </div>
-                                    
-                                    {/* Category count badge */}
-                                    {loadingCategories[comment.id] ? (
-                                      <Badge className="text-xs bg-gradient-to-r from-blue-100 to-indigo-100 text-blue-700 border-0 shadow-sm animate-pulse">
-                                        Loading...
-                                      </Badge>
-                                    ) : (() => {
-                                      const storedCats = detectedCategories[comment.id] || [];
-                                      const liveCats = realTimeCategories[comment.id] || [];
-                                      const allCategories = [...new Set([...storedCats, ...liveCats])];
-                                      
-                                      if (allCategories.length > 0) {
-                                        return (
-                                          <Badge className="text-xs bg-gradient-to-r from-emerald-500 to-green-600 text-white border-0 shadow-lg px-3 py-1 rounded-full font-semibold">
-                                            {allCategories.length} {allCategories.length === 1 ? 'category' : 'categories'}
-                                          </Badge>
-                                        );
-                                      } else if (smartMode[comment.id]) {
-                                        return (
-                                          <Badge className="text-xs bg-gradient-to-r from-slate-100 to-gray-100 text-slate-600 border-0 shadow-sm px-3 py-1 rounded-full">
-                                            No categories detected
-                                          </Badge>
-                                        );
-                                      }
-                                      return null;
-                                    })()}
-                                  </div>
-                                  
-                                  {/* Auto-select button */}
-                                  {(() => {
-                                    const storedCats = detectedCategories[comment.id] || [];
-                                    const liveCats = realTimeCategories[comment.id] || [];
-                                    const allCategories = [...new Set([...storedCats, ...liveCats])];
-                                    
-                                    if (smartMode[comment.id] && allCategories.length > 0) {
-                                      return (
-                                        <Button
-                                          size="sm"
-                                          onClick={() => {
-                                            const suggested = getSuggestedImages(allCategories, imagePacks, 2);
-                                            setSelectedImages(prev => ({
-                                              ...prev,
-                                              [comment.id]: suggested
-                                            }));
-                                          }}
-                                          className="text-sm bg-gradient-to-r from-purple-500 to-indigo-600 hover:from-purple-600 hover:to-indigo-700 text-white shadow-lg border-0 px-4 py-2 rounded-lg font-medium transition-all duration-200 hover:scale-105 hover:shadow-xl"
-                                        >
-                                          <Sparkles className="h-4 w-4 mr-2" />
-                                          Auto-Select
-                                        </Button>
-                                      );
-                                    }
-                                    return null;
-                                  })()}
-                                </div>
-                                
-                                <ImageGallery
-                                  categories={smartMode[comment.id] ? (
-                                    realTimeCategories[comment.id]?.length > 0 
-                                      ? realTimeCategories[comment.id] 
-                                      : (detectedCategories[comment.id] || [])
-                                  ) : []}
-                                  imagePacks={imagePacks}
-                                  selectedImages={selectedImages[comment.id] || []}
-                                  onImageSelect={(filename) => handleImageSelect(comment.id, filename)}
-                                  onBulkSelect={(filenames) => handleBulkImageSelect(comment.id, filenames)}
-                                  smartMode={smartMode[comment.id] || false}
-                                  loading={loadingCategories[comment.id] || false}
-                                />
-                              </div>
-                            </div>
-                          )}
-
-                          {/* Integrated Action Bar */}
-                          <div className="p-4 flex items-center justify-between bg-gradient-to-r from-slate-50/50 to-white border-t border-slate-200/50">
-                            <div className="flex items-center gap-2">
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => toggleImageSelector(comment.id)}
-                                className="h-9 px-4 text-slate-600 hover:text-slate-800 hover:bg-gradient-to-r hover:from-slate-100 hover:to-slate-50 rounded-lg transition-all duration-200 border border-transparent hover:border-slate-200"
-                              >
-                                <Image className="h-4 w-4 mr-2" />
-                                {showImageSelector[comment.id] ? 'Hide' : 'Add'} Images
-                                {(selectedImages[comment.id] || []).length > 0 && (
-                                  <span className="ml-2 text-xs bg-gradient-to-r from-blue-500 to-indigo-600 text-white px-2 py-0.5 rounded-full font-medium shadow-sm">
-                                    {(selectedImages[comment.id] || []).length}
-                                  </span>
-                                )}
-                              </Button>
-                            </div>
-                            
-                            <div className="flex items-center gap-2">
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                onClick={cancelEditing}
-                                className="h-9 px-4 text-slate-600 hover:text-slate-800 hover:bg-gradient-to-r hover:from-slate-100 hover:to-slate-50 rounded-lg transition-all duration-200 border border-transparent hover:border-slate-200"
-                              >
-                                Cancel
-                              </Button>
-                              <Button
-                                size="sm"
-                                onClick={() => handleApprove(comment.id)}
-                                className="bg-gradient-to-r from-emerald-500 to-green-600 hover:from-emerald-600 hover:to-green-700 text-white h-9 px-6 shadow-lg border-0 rounded-lg font-medium transition-all duration-200 hover:scale-105 hover:shadow-xl"
-                              >
-                                <CheckCircle className="h-4 w-4 mr-2" />
-                                Post to Facebook
-                              </Button>
-                            </div>
-                          </div>
                         </div>
-                      ) : (
-                        // UNIFIED READ-ONLY COMPONENT
-                        <div className="border-0 rounded-xl bg-gradient-to-br from-white via-slate-50/50 to-white shadow-lg backdrop-blur-sm overflow-hidden">
-                          {/* Post Information Section */}
-                          <div className="p-4 border-b border-slate-200/50 bg-gradient-to-r from-slate-50/30 to-white">
-                            <div className="flex items-center gap-3 mb-4">
-                              <Badge className={`${getPostTypeColor(comment.post_type)} font-semibold px-3 py-1 rounded-full shadow-sm border-0`}>
-                                {comment.post_type.toUpperCase()}
-                              </Badge>
-                              {comment.post_author && (
-                                <span className="text-sm font-medium text-slate-600 bg-slate-100 px-3 py-1 rounded-full">
-                                  by {comment.post_author}
-                                </span>
-                              )}
-                            </div>
-                            
-                            {renderPostImages(comment)}
-                            
-                            <div className="mb-4">
-                              <h5 className="text-xs font-semibold text-slate-600 mb-2 flex items-center gap-2">
-                                <div className="w-0.5 h-3 bg-gradient-to-b from-blue-500 to-indigo-600 rounded-full"></div>
-                                Original Post
-                              </h5>
-                              <p className="text-sm leading-relaxed text-slate-700 bg-white/80 p-3 rounded-lg border border-slate-200/30">
-                                {comment.post_text}
-                              </p>
-                            </div>
-                          </div>
-                          
-                          {/* Generated Comment */}
-                          <div className="p-4 bg-gradient-to-r from-blue-50/30 to-indigo-50/30">
-                            <h5 className="text-xs font-semibold text-slate-600 mb-3 flex items-center gap-2">
+
+                        {/* Main Content Area */}
+                        <div className="flex gap-6">
+                          {/* Left Side - Post Text */}
+                          <div className="flex-1">
+                            <h5 className="text-xs font-semibold text-purple-700 mb-2 flex items-center gap-2">
                               <div className="w-0.5 h-3 bg-gradient-to-b from-purple-500 to-indigo-600 rounded-full"></div>
-                              Generated Comment
+                              Original Post
                             </h5>
-                            <p className="text-sm leading-relaxed text-slate-700 font-medium bg-white/60 p-3 rounded-lg">
-                              {comment.generated_comment}
+                            <p className="text-sm leading-relaxed text-slate-700 bg-white/60 p-4 rounded-lg border border-purple-200/30 mb-3">
+                              {comment.post_text}
                             </p>
+
+                            {/* Action Buttons - Below Text */}
+                            <div className="flex gap-2">
+                              <Button
+                                size="sm"
+                                onClick={() =>
+                                  window.open(comment.post_author_url, "_blank")
+                                }
+                                className="bg-gradient-to-r from-purple-100 to-indigo-100 hover:from-purple-200 hover:to-indigo-200 text-purple-700 border-0 shadow-sm hover:shadow-md transition-all duration-200 rounded-lg font-medium"
+                              >
+                                <ExternalLink className="h-4 w-4 mr-2" />
+                                View Post
+                              </Button>
+
+                              <Button
+                                size="sm"
+                                onClick={() =>
+                                  handleReject(comment.id, "Rejected by user")
+                                }
+                                className="bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 text-white shadow-lg border-0 rounded-lg font-medium transition-all duration-200 hover:scale-105 hover:shadow-xl"
+                              >
+                                <XCircle className="h-4 w-4 mr-2" />
+                                Reject
+                              </Button>
+                            </div>
+                          </div>
+
+                          {/* Right Side - Larger Post Image */}
+                          <div className="flex-shrink-0 w-80 flex items-center justify-center">
+                            <div className="relative [&_img]:!w-full [&_img]:!max-w-80 [&_img]:!h-64 [&_img]:!object-cover [&_img]:!rounded-lg [&_img]:!shadow-lg [&_img]:!border [&_img]:!border-purple-200/30">
+                              {renderPostImages(comment)}
+                            </div>
                           </div>
                         </div>
-                      )}
+                      </CardContent>
+                    </Card>
+                  </div>
 
-                      <div className="flex items-center gap-3 text-xs text-slate-500 bg-slate-50/50 px-3 py-2 rounded-lg mt-4">
-                        <span className="font-medium">
-                          Created: {new Date(comment.created_at).toLocaleString()}
-                        </span>
-                        {comment.post_engagement && (
-                          <span className="px-2 py-1 bg-slate-200/50 rounded-full">• {comment.post_engagement}</span>
-                        )}
-                      </div>
+                  {/* Sidebar Layout - 50% left + 50% right */}
+                  <div className="flex gap-4 h-full">
+                    {/* Left Side: Comment Generation Sidebar (50%) */}
+                    <div className="flex-1 min-w-0" style={{ flex: "0 0 50%" }}>
+                      <CommentGenerationSidebar
+                        comment={comment}
+                        isEditing={editingComment === comment.id}
+                        editedText={editedText}
+                        selectedTemplate={selectedTemplate}
+                        templates={templates}
+                        selectedImages={selectedImages[comment.id] || []}
+                        showImageSelector={
+                          showImageSelector[comment.id] || false
+                        }
+                        imagePacks={imagePacks}
+                        smartMode={commentSmartMode[comment.id] || false}
+                        analyzingText={analyzingText[comment.id] || false}
+                        realTimeCategories={
+                          realTimeCategories[comment.id] || []
+                        }
+                        detectedCategories={
+                          detectedCategories[comment.id] || []
+                        }
+                        loadingCategories={
+                          loadingCategories[comment.id] || false
+                        }
+                        onStartEditing={() => startEditing(comment)}
+                        onCancelEditing={cancelEditing}
+                        onApprove={() => handleApprove(comment.id)}
+                        onTextEdit={(text) => handleTextEdit(comment.id, text)}
+                        onTemplateSelect={(templateId) =>
+                          handleTemplateSelect(templateId, comment)
+                        }
+                        onToggleImageSelector={() =>
+                          toggleImageSelector(comment.id)
+                        }
+                        onImageSelect={(filename) =>
+                          handleImageSelect(comment.id, filename)
+                        }
+                        onBulkImageSelect={(filenames) =>
+                          handleBulkImageSelect(comment.id, filenames)
+                        }
+                        onToggleSmartMode={(enabled) =>
+                          toggleCommentSmartMode(comment.id, enabled)
+                        }
+                        personalizeTemplate={personalizeTemplate}
+                      />
                     </div>
 
-                    <div className="flex flex-col gap-3 ml-6">
-                      <Button
-                        size="sm"
-                        onClick={() => window.open(comment.post_url, "_blank")}
-                        className="bg-gradient-to-r from-slate-100 to-slate-200 hover:from-slate-200 hover:to-slate-300 text-slate-700 border-0 shadow-sm hover:shadow-md transition-all duration-200 rounded-lg font-medium"
-                      >
-                        <ExternalLink className="h-4 w-4 mr-2" />
-                        View Post
-                      </Button>
-
-                      {editingComment !== comment.id && (
-                        <div className="flex gap-2">
-                          <Button
-                            size="sm"
-                            onClick={() => startEditing(comment)}
-                            className="bg-gradient-to-r from-blue-100 to-indigo-100 hover:from-blue-200 hover:to-indigo-200 text-blue-700 border-0 shadow-sm hover:shadow-md transition-all duration-200 rounded-lg font-medium"
-                          >
-                            <Edit className="h-4 w-4 mr-2" />
-                            Edit
-                          </Button>
-                          <Button
-                            size="sm"
-                            onClick={() => handleApprove(comment.id)}
-                            className="bg-gradient-to-r from-emerald-500 to-green-600 hover:from-emerald-600 hover:to-green-700 text-white shadow-lg border-0 rounded-lg font-medium transition-all duration-200 hover:scale-105 hover:shadow-xl"
-                          >
-                            <CheckCircle className="h-4 w-4 mr-2" />
-                            Approve
-                          </Button>
-                          <Button
-                            size="sm"
-                            onClick={() =>
-                              handleReject(comment.id, "Rejected by user")
+                    {/* Right Sidebar: Message Generation (50%) */}
+                    <div className="flex-1 min-w-0">
+                      {comment.post_author_url &&
+                        comment.post_author &&
+                        comment.post_author !== "User" && (
+                          <MessageGenerationSidebar
+                            comment={comment}
+                            isGenerating={isGenerating}
+                            automationMethod={automationMethod}
+                            notification={
+                              smartLauncherNotifications[comment.id]
                             }
-                            className="bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 text-white shadow-lg border-0 rounded-lg font-medium transition-all duration-200 hover:scale-105 hover:shadow-xl"
-                          >
-                            <XCircle className="h-4 w-4 mr-2" />
-                            Reject
-                          </Button>
-                          {comment.post_author_url && comment.post_author && comment.post_author !== "User" && (
-                            <div className="space-y-3">
-                              {/* Automation Method Toggle */}
-                              <div className="flex items-center gap-3 p-2 bg-gradient-to-r from-slate-50 to-gray-50 rounded-lg border border-slate-200/50">
-                                <div className="flex items-center gap-2">
-                                  <Switch
-                                    id={`automation-method-${comment.id}`}
-                                    checked={automationMethod === 'selenium'}
-                                    onCheckedChange={(checked) => setAutomationMethod(checked ? 'selenium' : 'clipboard')}
-                                    disabled={isGenerating}
-                                    className="data-[state=checked]:bg-gradient-to-r data-[state=checked]:from-purple-500 data-[state=checked]:to-blue-600"
-                                  />
-                                  <Label htmlFor={`automation-method-${comment.id}`} className="text-xs font-medium cursor-pointer text-slate-700">
-                                    <span className="flex items-center gap-1">
-                                      {automationMethod === 'selenium' ? (
-                                        <>
-                                          <div className="w-2 h-2 bg-purple-500 rounded-full"></div>
-                                          Full Automation (3-6s)
-                                        </>
-                                      ) : (
-                                        <>
-                                          <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
-                                          Clipboard Mode (Instant)
-                                        </>
-                                      )}
-                                    </span>
-                                  </Label>
-                                </div>
-                                <div className="text-xs text-slate-500">
-                                  {automationMethod === 'selenium' ? 'Auto-paste & upload' : 'Copy to clipboard'}
-                                </div>
-                              </div>
-                              
-                              {/* User Image Selection Toggle */}
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={() => toggleUserImageSelector(comment.id)}
-                                className="w-full mb-2 h-9 px-4 text-slate-600 hover:text-slate-800 hover:bg-gradient-to-r hover:from-slate-100 hover:to-slate-50 rounded-lg transition-all duration-200 border border-slate-300 hover:border-slate-400"
-                              >
-                                <Image className="h-4 w-4 mr-2" />
-                                {showUserImageSelector[comment.id] ? 'Hide Images' : '📸 Add Images'}
-                                {(userSelectedImages[comment.id] || []).length > 0 && (
-                                  <span className="ml-2 text-xs bg-gradient-to-r from-blue-500 to-indigo-600 text-white px-2 py-0.5 rounded-full font-medium shadow-sm">
-                                    {(userSelectedImages[comment.id] || []).length}
-                                  </span>
-                                )}
-                              </Button>
-                              
-                              {/* User Image Gallery */}
-                              {showUserImageSelector[comment.id] && (
-                                <div className="mb-4 p-4 bg-gradient-to-r from-slate-50/50 to-white rounded-lg border border-slate-200">
-                                  <div className="flex items-center justify-between mb-3">
-                                    <h5 className="font-medium text-sm text-slate-700 flex items-center gap-2">
-                                      <div className="w-1 h-4 bg-gradient-to-b from-blue-500 to-indigo-600 rounded-full"></div>
-                                      Select Additional Images
-                                    </h5>
-                                    {(userSelectedImages[comment.id] || []).length > 0 && (
-                                      <Button
-                                        size="sm"
-                                        variant="ghost"
-                                        onClick={() => setUserSelectedImages(prev => ({ ...prev, [comment.id]: [] }))}
-                                        className="text-xs text-slate-600 hover:text-slate-800"
-                                      >
-                                        Clear All
-                                      </Button>
-                                    )}
-                                  </div>
-                                  
-                                  <ImageGallery
-                                    categories={[]}
-                                    imagePacks={availableImages}
-                                    selectedImages={userSelectedImages[comment.id] || []}
-                                    onImageSelect={(filename) => handleUserImageSelect(comment.id, filename)}
-                                    onBulkSelect={(filenames) => handleUserBulkImageSelect(comment.id, filenames)}
-                                    smartMode={false}
-                                    loading={false}
-                                  />
-                                </div>
-                              )}
-                              
-                              <Button
-                                size="sm"
-                                disabled={isGenerating}
-                                onClick={() => handleSmartLauncher(comment.id, comment)}
-                                className="bg-gradient-to-r from-purple-500 to-blue-600 hover:from-purple-600 hover:to-blue-700 disabled:from-gray-400 disabled:to-gray-500 text-white shadow-lg border-0 rounded-lg font-medium transition-all duration-200 hover:scale-105 hover:shadow-xl disabled:cursor-not-allowed disabled:transform-none w-full"
-                              >
-                                {isGenerating ? (
-                                  <>
-                                    <div className="animate-spin h-4 w-4 mr-2 border-2 border-white border-t-transparent rounded-full" />
-                                    {automationMethod === 'selenium' ? 'Automating...' : 'Generating...'}
-                                  </>
-                                ) : (
-                                  <>
-                                    <Sparkles className="h-4 w-4 mr-2" />
-                                    Generate & Send Message
-                                  </>
-                                )}
-                              </Button>
-                              
-                              {/* Notification area */}
-                              {smartLauncherNotifications[comment.id] && (
-                                <div className={`text-xs p-2 rounded-md ${
-                                  smartLauncherNotifications[comment.id].includes('❌') 
-                                    ? 'bg-red-50 text-red-700 border border-red-200' 
-                                    : 'bg-green-50 text-green-700 border border-green-200'
-                                }`}>
-                                  {smartLauncherNotifications[comment.id]}
-                                </div>
-                              )}
-                              
-                              {/* Show generated message preview */}
-                              {generatedMessages[comment.id] && (
-                                <div className="text-xs p-2 bg-blue-50 border border-blue-200 rounded-md">
-                                  <div className="font-medium text-blue-800 mb-1">Generated Message:</div>
-                                  <div className="text-blue-700 italic">
-                                    "{generatedMessages[comment.id].substring(0, 100)}..."
-                                  </div>
-                                </div>
-                              )}
-                              
-                              {/* Debug info - shows processing status */}
-                              {isGenerating && (
-                                <div className="text-xs text-gray-500">
-                                  Processing: Generating message → Fetching images → Copying to clipboard → Opening Messenger
-                                </div>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      )}
+                            message={editableMessages[comment.id] || ""}
+                            isPreviewOpen={
+                              showMessagePreview[comment.id] || false
+                            }
+                            isSending={false} // TODO: Add sending state
+                            userSelectedImages={
+                              userSelectedImages[comment.id] || []
+                            }
+                            availableImages={availableImages}
+                            includePostImage={
+                              includePostImage[comment.id] || false
+                            }
+                            showImageSelector={
+                              showUserImageSelector[comment.id] || false
+                            }
+                            onGenerateMessage={() =>
+                              handleGenerateMessageOnly(comment.id)
+                            }
+                            onMessageChange={(message) => {
+                              setEditableMessages((prev) => ({
+                                ...prev,
+                                [comment.id]: message,
+                              }));
+                              if (messageSmartMode[comment.id]) {
+                                analyzeMessageText(comment.id, message);
+                              }
+                            }}
+                            onSendMessage={() =>
+                              handleSendMessageFromPreview(comment.id, comment)
+                            }
+                            onToggleIncludePostImage={() =>
+                              setIncludePostImage((prev) => ({
+                                ...prev,
+                                [comment.id]: !prev[comment.id],
+                              }))
+                            }
+                            onToggleImageSelector={() =>
+                              setShowUserImageSelector((prev) => ({
+                                ...prev,
+                                [comment.id]: !prev[comment.id],
+                              }))
+                            }
+                            onImageSelect={(filename) =>
+                              handleUserImageSelect(comment.id, filename)
+                            }
+                            onBulkImageSelect={(filenames) =>
+                              handleUserBulkImageSelect(comment.id, filenames)
+                            }
+                            onClearImages={() =>
+                              setUserSelectedImages((prev) => ({
+                                ...prev,
+                                [comment.id]: [],
+                              }))
+                            }
+                            smartMode={messageSmartMode[comment.id] || false}
+                            analyzingText={analyzingText[comment.id] || false}
+                            realTimeCategories={
+                              realTimeCategories[comment.id] || []
+                            }
+                            detectedCategories={
+                              detectedCategories[comment.id] || []
+                            }
+                            loadingCategories={loadingCategories[comment.id] || false}
+                            onToggleSmartMode={(enabled) =>
+                              toggleMessageSmartMode(comment.id, enabled)
+                            }
+                          />
+                        )}
                     </div>
                   </div>
                 </CardContent>
