@@ -978,11 +978,6 @@ def run_bot_with_queuing(bot_instance: FacebookAICommentBot, max_scrolls: int = 
                                     bot_instance.save_processed_post(clean_url, post_text=post_text, post_type="already_commented")
                                     continue
                                 
-                                # Check for duplicates
-                                if bot_instance.is_duplicate_post(post_text, clean_url):
-                                    logger.info(f"Duplicate post detected: {clean_url}")
-                                    bot_instance.save_processed_post(clean_url, post_text=post_text, post_type="duplicate")
-                                    continue
                                 
                                 # Ingest post into CRM
                                 ingest_post_to_crm(clean_url, post_text)
