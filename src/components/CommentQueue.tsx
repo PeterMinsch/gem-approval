@@ -31,7 +31,7 @@ import {
 import { ImageGallery } from "./ImageGallery";
 import { getSuggestedImages } from "@/services/categoryMapper";
 import { useMessageGeneration } from "@/hooks/useMessageGeneration";
-import { executeSmartLauncher, getInstructionMessage } from "@/utils/messageUtils";
+import { executeEnhancedSmartLauncher } from "@/utils/messageUtils";
 
 interface QueuedComment {
   id: string;
@@ -142,11 +142,18 @@ export const CommentQueue: React.FC = () => {
   // Real-time text analysis state
   const [analyzingText, setAnalyzingText] = useState<Record<string, boolean>>({});
   const [realTimeCategories, setRealTimeCategories] = useState<Record<string, string[]>>({});
+  // Automation method preference
+  const [automationMethod, setAutomationMethod] = useState<'clipboard' | 'selenium'>('clipboard');
+  // User-selectable images for Generate & Send Message
+  const [showUserImageSelector, setShowUserImageSelector] = useState<Record<string, boolean>>({});
+  const [userSelectedImages, setUserSelectedImages] = useState<Record<string, string[]>>({});
+  const [availableImages, setAvailableImages] = useState<ImagePack[]>([]);
 
   useEffect(() => {
     fetchComments();
     fetchTemplates();
     fetchImagePacks();
+    fetchAvailableImages();
     // Auto-refresh every 5 seconds
     const interval = setInterval(fetchComments, 5000);
     return () => clearInterval(interval);
@@ -205,6 +212,20 @@ export const CommentQueue: React.FC = () => {
     }
   };
 
+  const fetchAvailableImages = async () => {
+    try {
+      const response = await fetch('http://localhost:8000/api/image-packs');
+      if (response.ok) {
+        const packs = await response.json();
+        setAvailableImages(packs);
+      } else {
+        console.error('Failed to fetch available images');
+      }
+    } catch (error) {
+      console.error('Error loading available images:', error);
+    }
+  };
+
   const handleApprove = async (commentId: string) => {
     try {
       const images = selectedImages[commentId] || [];
@@ -257,7 +278,7 @@ export const CommentQueue: React.FC = () => {
   };
 
   const handleSmartLauncher = async (commentId: string, comment: QueuedComment) => {
-    console.log('🚀 Smart Launcher initiated for comment:', commentId);
+    console.log(`🚀 Enhanced Smart Launcher initiated for comment: ${commentId} using ${automationMethod} method`);
     
     try {
       // Clear any previous notifications
@@ -279,22 +300,26 @@ export const CommentQueue: React.FC = () => {
       // Store the generated message
       setGeneratedMessages(prev => ({ ...prev, [commentId]: result.message }));
 
-      // Step 2: Execute Smart Launcher (clipboard + Messenger)
+      // Step 2: Execute Enhanced Smart Launcher
       if (!result.messenger_url) {
         throw new Error('No Messenger URL available');
       }
 
-      // Prepare image URLs - combine post_images and screenshot
+      // Prepare image URLs - combine post_images, screenshot, and user-selected images
       const imageUrls: string[] = [];
+      const userImages = userSelectedImages[commentId] || [];
+      
       console.log('📸 Image data from API:', {
         post_images: result.post_images,
         post_screenshot: result.post_screenshot ? 'Present (base64)' : 'None',
-        has_images: result.has_images
+        has_images: result.has_images,
+        user_selected: userImages.length
       });
       
+      // Add AI-detected images first
       if (result.post_images && result.post_images.length > 0) {
         imageUrls.push(...result.post_images);
-        console.log(`✅ Added ${result.post_images.length} post images`);
+        console.log(`✅ Added ${result.post_images.length} AI-detected post images`);
       }
       if (result.post_screenshot && !imageUrls.length) {
         // Use screenshot as fallback if no other images
@@ -302,32 +327,51 @@ export const CommentQueue: React.FC = () => {
         console.log('✅ Using screenshot as fallback');
       }
       
-      console.log(`📷 Total images to process: ${imageUrls.length}`);
+      // Add user-selected images
+      if (userImages.length > 0) {
+        // Convert relative paths to absolute local paths for Selenium file upload
+        const userImageUrls = userImages.map(img => {
+          if (img.startsWith('http')) return img;
+          if (img.startsWith('C:')) return img; // Already absolute path
+          // Convert relative path to absolute local path
+          return img.replace(/^uploads\//, 'C:/Users/petem/personal/gem-approval/uploads/');
+        });
+        imageUrls.push(...userImageUrls);
+        console.log(`✅ Added ${userImages.length} user-selected images`);
+        console.log('🔍 User image paths:', userImageUrls);
+      }
+      
+      console.log(`📷 Total images to process: ${imageUrls.length} (${result.post_images?.length || 0} AI + ${userImages.length} user-selected)`);
 
       // Check for debug mode (set window.DEBUG_CLIPBOARD = true in console)
       const debugMode = (window as any).DEBUG_CLIPBOARD === true;
       
-      const launcherResult = await executeSmartLauncher(
+      // Use Enhanced Smart Launcher with selected method
+      const launcherResult = await executeEnhancedSmartLauncher(
         result.message, 
         result.messenger_url,
         imageUrls,
-        debugMode
+        {
+          method: automationMethod,
+          debugMode: debugMode,
+          sessionId: `user_${commentId}_${Date.now()}`
+        }
       );
       
       // Step 3: Show user feedback
-      const instructionMessage = getInstructionMessage(launcherResult);
       setSmartLauncherNotifications(prev => ({ 
         ...prev, 
-        [commentId]: instructionMessage 
+        [commentId]: launcherResult.message 
       }));
 
-      // Auto-clear notification after 8 seconds
+      // Auto-clear notification after longer time for Selenium (to see duration)
+      const clearDelay = automationMethod === 'selenium' ? 10000 : 8000;
       setTimeout(() => {
         setSmartLauncherNotifications(prev => ({ ...prev, [commentId]: '' }));
-      }, 8000);
+      }, clearDelay);
 
     } catch (error) {
-      console.error('❌ Smart Launcher failed:', error);
+      console.error('❌ Enhanced Smart Launcher failed:', error);
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       setSmartLauncherNotifications(prev => ({ 
         ...prev, 
@@ -406,6 +450,30 @@ export const CommentQueue: React.FC = () => {
   
   const handleBulkImageSelect = (commentId: string, filenames: string[]) => {
     setSelectedImages(prev => ({
+      ...prev,
+      [commentId]: filenames
+    }));
+  };
+
+  const toggleUserImageSelector = (commentId: string) => {
+    setShowUserImageSelector(prev => ({
+      ...prev,
+      [commentId]: !prev[commentId]
+    }));
+  };
+
+  const handleUserImageSelect = (commentId: string, filename: string) => {
+    setUserSelectedImages(prev => {
+      const currentImages = prev[commentId] || [];
+      const newImages = currentImages.includes(filename)
+        ? currentImages.filter(img => img !== filename)
+        : [...currentImages, filename];
+      return { ...prev, [commentId]: newImages };
+    });
+  };
+
+  const handleUserBulkImageSelect = (commentId: string, filenames: string[]) => {
+    setUserSelectedImages(prev => ({
       ...prev,
       [commentId]: filenames
     }));
@@ -986,17 +1054,96 @@ export const CommentQueue: React.FC = () => {
                             Reject
                           </Button>
                           {comment.post_author_url && comment.post_author && comment.post_author !== "User" && (
-                            <div className="space-y-2">
+                            <div className="space-y-3">
+                              {/* Automation Method Toggle */}
+                              <div className="flex items-center gap-3 p-2 bg-gradient-to-r from-slate-50 to-gray-50 rounded-lg border border-slate-200/50">
+                                <div className="flex items-center gap-2">
+                                  <Switch
+                                    id={`automation-method-${comment.id}`}
+                                    checked={automationMethod === 'selenium'}
+                                    onCheckedChange={(checked) => setAutomationMethod(checked ? 'selenium' : 'clipboard')}
+                                    disabled={isGenerating}
+                                    className="data-[state=checked]:bg-gradient-to-r data-[state=checked]:from-purple-500 data-[state=checked]:to-blue-600"
+                                  />
+                                  <Label htmlFor={`automation-method-${comment.id}`} className="text-xs font-medium cursor-pointer text-slate-700">
+                                    <span className="flex items-center gap-1">
+                                      {automationMethod === 'selenium' ? (
+                                        <>
+                                          <div className="w-2 h-2 bg-purple-500 rounded-full"></div>
+                                          Full Automation (3-6s)
+                                        </>
+                                      ) : (
+                                        <>
+                                          <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
+                                          Clipboard Mode (Instant)
+                                        </>
+                                      )}
+                                    </span>
+                                  </Label>
+                                </div>
+                                <div className="text-xs text-slate-500">
+                                  {automationMethod === 'selenium' ? 'Auto-paste & upload' : 'Copy to clipboard'}
+                                </div>
+                              </div>
+                              
+                              {/* User Image Selection Toggle */}
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => toggleUserImageSelector(comment.id)}
+                                className="w-full mb-2 h-9 px-4 text-slate-600 hover:text-slate-800 hover:bg-gradient-to-r hover:from-slate-100 hover:to-slate-50 rounded-lg transition-all duration-200 border border-slate-300 hover:border-slate-400"
+                              >
+                                <Image className="h-4 w-4 mr-2" />
+                                {showUserImageSelector[comment.id] ? 'Hide Images' : '📸 Add Images'}
+                                {(userSelectedImages[comment.id] || []).length > 0 && (
+                                  <span className="ml-2 text-xs bg-gradient-to-r from-blue-500 to-indigo-600 text-white px-2 py-0.5 rounded-full font-medium shadow-sm">
+                                    {(userSelectedImages[comment.id] || []).length}
+                                  </span>
+                                )}
+                              </Button>
+                              
+                              {/* User Image Gallery */}
+                              {showUserImageSelector[comment.id] && (
+                                <div className="mb-4 p-4 bg-gradient-to-r from-slate-50/50 to-white rounded-lg border border-slate-200">
+                                  <div className="flex items-center justify-between mb-3">
+                                    <h5 className="font-medium text-sm text-slate-700 flex items-center gap-2">
+                                      <div className="w-1 h-4 bg-gradient-to-b from-blue-500 to-indigo-600 rounded-full"></div>
+                                      Select Additional Images
+                                    </h5>
+                                    {(userSelectedImages[comment.id] || []).length > 0 && (
+                                      <Button
+                                        size="sm"
+                                        variant="ghost"
+                                        onClick={() => setUserSelectedImages(prev => ({ ...prev, [comment.id]: [] }))}
+                                        className="text-xs text-slate-600 hover:text-slate-800"
+                                      >
+                                        Clear All
+                                      </Button>
+                                    )}
+                                  </div>
+                                  
+                                  <ImageGallery
+                                    categories={[]}
+                                    imagePacks={availableImages}
+                                    selectedImages={userSelectedImages[comment.id] || []}
+                                    onImageSelect={(filename) => handleUserImageSelect(comment.id, filename)}
+                                    onBulkSelect={(filenames) => handleUserBulkImageSelect(comment.id, filenames)}
+                                    smartMode={false}
+                                    loading={false}
+                                  />
+                                </div>
+                              )}
+                              
                               <Button
                                 size="sm"
                                 disabled={isGenerating}
                                 onClick={() => handleSmartLauncher(comment.id, comment)}
-                                className="bg-gradient-to-r from-purple-500 to-blue-600 hover:from-purple-600 hover:to-blue-700 disabled:from-gray-400 disabled:to-gray-500 text-white shadow-lg border-0 rounded-lg font-medium transition-all duration-200 hover:scale-105 hover:shadow-xl disabled:cursor-not-allowed disabled:transform-none"
+                                className="bg-gradient-to-r from-purple-500 to-blue-600 hover:from-purple-600 hover:to-blue-700 disabled:from-gray-400 disabled:to-gray-500 text-white shadow-lg border-0 rounded-lg font-medium transition-all duration-200 hover:scale-105 hover:shadow-xl disabled:cursor-not-allowed disabled:transform-none w-full"
                               >
                                 {isGenerating ? (
                                   <>
                                     <div className="animate-spin h-4 w-4 mr-2 border-2 border-white border-t-transparent rounded-full" />
-                                    Generating...
+                                    {automationMethod === 'selenium' ? 'Automating...' : 'Generating...'}
                                   </>
                                 ) : (
                                   <>

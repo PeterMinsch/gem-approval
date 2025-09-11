@@ -190,22 +190,7 @@ async def get_image_packs():
                             "description": description
                         })
             
-            # HARDCODE: Override Generic Card pack
-            if pack['name'] == 'Generic Card':
-                converted_images = [
-                    {
-                        "filename": "uploads/image-packs/generic/test_ring.jpg",
-                        "description": "Test Ring Image"
-                    },
-                    {
-                        "filename": "uploads/image-packs/generic/bravo-comment-card.png", 
-                        "description": "Bravo Comment Card"
-                    },
-                    {
-                        "filename": "uploads/image-packs/generic/blue_topaz_ring.png",
-                        "description": "Blue Topaz Ring"
-                    }
-                ]
+            # Note: No more hardcoded override - API now respects database content
                 
             response_packs.append(ImagePackResponse(
                 id=pack['id'],
@@ -232,10 +217,24 @@ async def get_image_pack(pack_id: str):
         if not pack:
             raise HTTPException(status_code=404, detail="Image pack not found")
         
+        # Convert string images to object format (same logic as get_image_packs)
+        converted_images = []
+        raw_images = pack.get('images', [])
+        
+        if raw_images:
+            for img_path in raw_images:
+                if isinstance(img_path, str):
+                    filename = img_path.split('/')[-1] if '/' in img_path else img_path
+                    description = filename.replace('_', ' ').replace('.jpg', '').replace('.png', '').title()
+                    converted_images.append({
+                        "filename": img_path,
+                        "description": description
+                    })
+        
         return ImagePackResponse(
             id=pack['id'],
             name=pack['name'],
-            images=pack['images'],
+            images=converted_images,
             is_default=pack['is_default'],
             created_at=pack['created_at'],
             updated_at=pack['updated_at']
@@ -301,8 +300,19 @@ async def upload_images_to_pack(
             file_path = os.path.join(upload_path, unique_name)
             
             try:
+                # Reset file pointer to beginning
+                await file.seek(0)
+                
+                # Save file with proper error handling
                 with open(file_path, "wb") as buffer:
-                    shutil.copyfileobj(file.file, buffer)
+                    content = await file.read()
+                    buffer.write(content)
+                    buffer.flush()  # Ensure data is written to disk
+                    os.fsync(buffer.fileno())  # Force OS to write to storage
+                
+                # Verify file was actually saved
+                if not os.path.exists(file_path) or os.path.getsize(file_path) == 0:
+                    raise Exception(f"File saving failed - file not found or empty: {file_path}")
                 
                 # Store relative path for database and serving
                 relative_path = f"uploads/image-packs/{category_dir}/{unique_name}"
@@ -316,18 +326,25 @@ async def upload_images_to_pack(
                         "path": relative_path,
                         "url": f"/uploads/image-packs/{category_dir}/{unique_name}"
                     })
-                    logger.info(f"Uploaded image: {relative_path}")
+                    logger.info(f"✅ Image uploaded and verified: {relative_path} ({os.path.getsize(file_path)} bytes)")
                 else:
                     # Remove file if database update failed
                     if os.path.exists(file_path):
                         os.remove(file_path)
-                    logger.error(f"Failed to add {unique_name} to database")
+                    logger.error(f"❌ Failed to add {unique_name} to database")
+                    raise Exception(f"Database update failed for {unique_name}")
             
             except Exception as e:
                 logger.error(f"Error saving file {file.filename}: {e}")
                 # Clean up partial file if it exists
-                if os.path.exists(file_path):
-                    os.remove(file_path)
+                try:
+                    if os.path.exists(file_path):
+                        os.remove(file_path)
+                        logger.info(f"Cleaned up partial file: {file_path}")
+                except Exception as cleanup_error:
+                    logger.error(f"Failed to clean up partial file {file_path}: {cleanup_error}")
+                # Re-raise the original error
+                raise Exception(f"File upload failed for {file.filename}: {str(e)}")
         
         if not uploaded_files:
             raise HTTPException(status_code=400, detail="No valid images were uploaded")

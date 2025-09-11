@@ -16,6 +16,9 @@ bot/chrome_data_browser
 bot/chrome_data_posting_only
 bot/chrome_posting_temp_*
 bot/testing
+bot/browser_profiles
+bot/chrome_messenger_persistent
+bot/chrome_messenger*
 bot/comments.db
 
 __pycache__

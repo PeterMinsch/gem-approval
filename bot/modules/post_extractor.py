@@ -1063,6 +1063,20 @@ class PostExtractor:
                 extracted = profile_url.split('id=')[1].split('&')[0]
                 logger.debug(f"ID_EXTRACTION: Traditional profile - extracted: '{extracted}'")
                 return extracted
+            elif '/messages/' in profile_url:
+                # Handle messenger URLs: /messages/t/123456789 or /messages/e2ee/t/123456789
+                logger.debug(f"ID_EXTRACTION: Processing messenger URL: '{profile_url}'")
+                
+                # Look for the pattern after /messages/
+                if '/messages/e2ee/t/' in profile_url:
+                    extracted = profile_url.split('/messages/e2ee/t/')[1].split('/')[0].split('?')[0]
+                elif '/messages/t/' in profile_url:
+                    extracted = profile_url.split('/messages/t/')[1].split('/')[0].split('?')[0]
+                else:
+                    extracted = None
+                
+                logger.debug(f"ID_EXTRACTION: Messenger - extracted: '{extracted}'")
+                return extracted
             elif '/groups/' in profile_url and '/user/' in profile_url:
                 # FIXED: Handle group-based profile URLs
                 # Extract from: /groups/[groupid]/user/[userid]/

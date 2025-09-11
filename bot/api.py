@@ -22,6 +22,8 @@ from bravo_config import CONFIG
 from database import db
 from performance_timer import log_performance_summary
 from modules.message_generator import MessageGenerator
+from browser_manager import MessengerBrowserManager
+from messenger_automation import MessengerAutomation
 
 # Configure logging
 def setup_api_logger():
@@ -130,8 +132,6 @@ from image_pack_api import router as image_pack_router
 app.include_router(image_pack_router, prefix="/api")
 
 # Global bot instance and status
-
-# Global bot instance and status
 bot_instance = None
 bot_status = {
     "is_running": False,
@@ -142,6 +142,9 @@ bot_status = {
     "comments_queued": 0,
     "current_status": "idle"
 }
+
+# Global messenger browser manager
+messenger_browser_manager = MessengerBrowserManager()
 
 
 # Remove automatic bot/background browser startup. Only start on /bot/start endpoint.
@@ -301,6 +304,18 @@ class TemplateResponse(BaseModel):
 class TemplateDeleteResponse(BaseModel):
     success: bool
     message: str
+
+# Messenger Automation Models
+class MessengerRequest(BaseModel):
+    session_id: str
+    recipient: str
+    message: str
+    images: Optional[List[str]] = None
+
+class MessengerResponse(BaseModel):
+    status: str
+    duration: Optional[str] = None
+    error: Optional[str] = None
 
 # Pending approvals queue for when bot is initializing
 pending_approvals = []
@@ -2263,6 +2278,112 @@ async def send_comment(request: Dict[str, Any]):
         logger.error(f"❌ Error sending comment: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to send comment: {str(e)}")
 
+# Utility endpoint to convert base64 images to temporary files
+@app.post("/convert-base64-images")
+async def convert_base64_images(request: dict):
+    """Convert base64 image data to temporary files for selenium automation"""
+    try:
+        base64_images = request.get('base64_images', [])
+        if not base64_images:
+            return {"success": True, "file_paths": []}
+        
+        logger.info(f"🔄 Converting {len(base64_images)} base64 images to temporary files")
+        
+        # Import ImageHandler for conversion
+        from modules.image_handler import ImageHandler
+        
+        # Create a dummy handler instance (we only need the static conversion methods)
+        handler = ImageHandler(None, {})
+        
+        # Convert all base64 images to temporary files
+        file_paths = handler.convert_post_images_to_files(base64_images)
+        
+        logger.info(f"✅ Converted {len(file_paths)}/{len(base64_images)} images to temporary files")
+        
+        return {
+            "success": True,
+            "file_paths": file_paths,
+            "converted_count": len(file_paths),
+            "total_count": len(base64_images)
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to convert base64 images: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "file_paths": []
+        }
+
+# Messenger Automation Endpoints
+
+@app.post("/messenger/send-message", response_model=MessengerResponse)
+async def send_messenger_message(request: MessengerRequest):
+    """Send message via Messenger automation"""
+    try:
+        logger.info(f"🚀 Messenger automation request - Session: {request.session_id}, Recipient: {request.recipient}")
+        
+        # Get browser for this session
+        browser = messenger_browser_manager.get_messenger_browser(request.session_id)
+        
+        # Get main browser for session copying
+        main_browser = None
+        try:
+            if bot_instance and hasattr(bot_instance, 'posting_driver') and bot_instance.posting_driver:
+                main_browser = bot_instance.posting_driver
+                logger.info("Found main posting browser for session copying")
+            elif bot_instance and hasattr(bot_instance, 'driver') and bot_instance.driver:
+                main_browser = bot_instance.driver
+                logger.info("Found main driver for session copying")
+            else:
+                logger.warning("No main browser found - will use credential login")
+        except Exception as e:
+            logger.warning(f"Could not access main browser: {e}")
+        
+        # Create automation instance with source browser for session copying
+        messenger = MessengerAutomation(browser, source_browser=main_browser)
+        
+        # Send message with images
+        result = await messenger.send_message_with_images(
+            recipient=request.recipient,
+            message=request.message,
+            image_paths=request.images
+        )
+        
+        logger.info(f"✅ Messenger automation result: {result}")
+        return MessengerResponse(**result)
+        
+    except Exception as e:
+        logger.error(f"❌ Messenger automation failed: {e}")
+        return MessengerResponse(status="error", error=str(e))
+
+@app.get("/messenger/sessions")
+async def get_messenger_sessions():
+    """Get active messenger browser sessions"""
+    try:
+        sessions = list(messenger_browser_manager.messenger_browsers.keys())
+        return {"active_sessions": sessions, "count": len(sessions)}
+    except Exception as e:
+        logger.error(f"Error getting messenger sessions: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get sessions: {str(e)}")
+
+@app.delete("/messenger/session/{session_id}")
+async def cleanup_messenger_session(session_id: str):
+    """Cleanup specific messenger session"""
+    try:
+        messenger_browser_manager._cleanup_browser(session_id)
+        logger.info(f"✅ Cleaned up messenger session: {session_id}")
+        return {"status": "cleaned", "session_id": session_id}
+    except Exception as e:
+        logger.error(f"Error cleaning up session {session_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to cleanup session: {str(e)}")
+
+# Cleanup messenger browsers on app shutdown
+@app.on_event("shutdown")
+async def cleanup_browsers():
+    messenger_browser_manager.cleanup_all()
+    logger.info("🧹 All messenger browsers cleaned up on shutdown")
+
 @app.on_event("startup")
 async def startup_event():
     """Handle application startup tasks"""
@@ -2297,6 +2418,18 @@ async def startup_event():
     except Exception as e:
         logger.error(f"❌ Error during startup migration: {e}")
         # Don't fail startup for migration errors - system should still work
+    
+    # Start persistent messenger browser
+    try:
+        logger.info("🚀 Starting persistent messenger browser...")
+        success = messenger_browser_manager.start_persistent_browser()
+        if success:
+            logger.info("✅ Persistent messenger browser started successfully")
+        else:
+            logger.warning("⚠️ Failed to start persistent messenger browser - messenger automation will not work")
+    except Exception as e:
+        logger.error(f"❌ Error starting persistent browser: {e}")
+        # Don't fail startup for browser errors
 
 if __name__ == "__main__":
     import uvicorn

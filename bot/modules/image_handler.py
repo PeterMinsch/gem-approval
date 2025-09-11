@@ -6,6 +6,9 @@ Handles image extraction, validation, and uploading
 import os
 import logging
 import requests
+import tempfile
+import base64
+import uuid
 from typing import List, Optional
 from io import BytesIO
 from PIL import Image
@@ -211,3 +214,66 @@ class ImageHandler:
         """
         # Stub implementation
         pass
+    
+    def convert_base64_to_temp_file(self, base64_data: str) -> Optional[str]:
+        """
+        Convert base64 image data to a temporary file
+        
+        Args:
+            base64_data: Base64 encoded image string (e.g., "data:image/png;base64,...")
+            
+        Returns:
+            Path to temporary file or None if conversion fails
+        """
+        try:
+            # Remove data URL prefix if present
+            if base64_data.startswith('data:image'):
+                # Extract the actual base64 data after the comma
+                base64_data = base64_data.split(',')[1]
+            
+            # Decode base64 to bytes
+            image_bytes = base64.b64decode(base64_data)
+            
+            # Create temporary file with unique name
+            temp_dir = tempfile.gettempdir()
+            unique_filename = f"post_image_{uuid.uuid4().hex[:8]}.png"
+            temp_file_path = os.path.join(temp_dir, unique_filename)
+            
+            # Write image bytes to temporary file
+            with open(temp_file_path, 'wb') as temp_file:
+                temp_file.write(image_bytes)
+            
+            # Verify file was created successfully
+            if os.path.exists(temp_file_path) and os.path.getsize(temp_file_path) > 0:
+                logger.debug(f"✅ Created temporary file: {temp_file_path}")
+                return temp_file_path
+            else:
+                logger.error(f"❌ Failed to create temporary file: {temp_file_path}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Failed to convert base64 to temporary file: {e}")
+            return None
+    
+    def convert_post_images_to_files(self, post_images: List[str]) -> List[str]:
+        """
+        Convert a list of base64 post images to temporary files
+        
+        Args:
+            post_images: List of base64 encoded image strings
+            
+        Returns:
+            List of temporary file paths
+        """
+        temp_file_paths = []
+        
+        for i, base64_img in enumerate(post_images):
+            temp_path = self.convert_base64_to_temp_file(base64_img)
+            if temp_path:
+                temp_file_paths.append(temp_path)
+                logger.debug(f"📷 Converted post image {i+1}/{len(post_images)} to {temp_path}")
+            else:
+                logger.warning(f"⚠️ Failed to convert post image {i+1}/{len(post_images)}")
+        
+        logger.info(f"📁 Converted {len(temp_file_paths)}/{len(post_images)} post images to temporary files")
+        return temp_file_paths

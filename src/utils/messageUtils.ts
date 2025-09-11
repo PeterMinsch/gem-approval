@@ -178,26 +178,33 @@ export const copyToClipboard = async (text: string): Promise<boolean> => {
 /**
  * Open Facebook Messenger conversation in new tab
  */
-export const openMessengerConversation = (messengerUrl: string): boolean => {
+export const openMessengerConversation = (messengerUrl: string, allowRedirect: boolean = true): boolean => {
   try {
     if (!messengerUrl) {
       console.error('❌ No Messenger URL provided');
       return false;
     }
     
+    console.log(`🔗 Attempting to open: ${messengerUrl}`);
+    
     // Open Messenger in new tab
     const newWindow = window.open(messengerUrl, '_blank', 'noopener,noreferrer');
     
     if (newWindow) {
-      console.log(`✅ Opened Messenger conversation: ${messengerUrl}`);
+      console.log(`✅ Opened Messenger conversation in new tab: ${messengerUrl}`);
       // Focus the new window (if popup blockers allow)
       newWindow.focus();
       return true;
     } else {
-      // Fallback if popup is blocked
-      console.warn('⚠️ Popup blocked, trying fallback navigation');
-      window.location.href = messengerUrl;
-      return true;
+      // Fallback if popup is blocked - only redirect if allowed
+      if (allowRedirect) {
+        console.warn('⚠️ Popup blocked, redirecting main window');
+        window.location.href = messengerUrl;
+        return true;
+      } else {
+        console.warn('⚠️ Popup blocked, redirect disabled for Selenium mode - staying on current page');
+        return false; // Failed to open, but don't redirect main page
+      }
     }
   } catch (error) {
     console.error('❌ Failed to open Messenger conversation:', error);
@@ -222,6 +229,14 @@ export const extractFacebookIdFromProfileUrl = (profileUrl: string): string | nu
       const result = match ? match[1] : null;
       console.debug(`FRONTEND_ID_EXTRACTION: Traditional profile - extracted: '${result}'`);
       return result;
+    } else if (profileUrl.includes('/messages/')) {
+      // Handle messenger URLs: /messages/t/123456789 or /messages/e2ee/t/123456789
+      console.debug(`FRONTEND_ID_EXTRACTION: Processing messenger URL: '${profileUrl}'`);
+      
+      const messengerMatch = profileUrl.match(/\/messages\/(?:e2ee\/)?t\/([^/?]+)/);
+      const result = messengerMatch ? messengerMatch[1] : null;
+      console.debug(`FRONTEND_ID_EXTRACTION: Messenger - extracted: '${result}'`);
+      return result;
     } else if (profileUrl.includes('/groups/') && profileUrl.includes('/user/')) {
       // Handle group-based profile URLs
       // Extract from: /groups/[groupid]/user/[userid]/
@@ -237,7 +252,7 @@ export const extractFacebookIdFromProfileUrl = (profileUrl: string): string | nu
       const path = pathMatch ? pathMatch[1] : null;
       
       // Filter out obvious non-profile paths
-      if (path && !['profile.php', 'photo', 'events', 'pages'].includes(path)) {
+      if (path && !['profile.php', 'photo', 'events', 'pages', 'messages'].includes(path)) {
         console.debug(`FRONTEND_ID_EXTRACTION: Username - extracted: '${path}'`);
         return path;
       }
@@ -280,7 +295,8 @@ export const executeSmartLauncher = async (
   message: string,
   messengerUrl: string,
   imageUrls?: string[],
-  debugMode: boolean = false
+  debugMode: boolean = false,
+  allowRedirect: boolean = true
 ): Promise<SmartLauncherResult> => {
   console.log('🚀 Executing Smart Launcher with images...');
   
@@ -320,7 +336,7 @@ export const executeSmartLauncher = async (
   // Step 4: Open Messenger conversation (unless in debug mode)
   let messengerSuccess = true;
   if (!debugMode) {
-    messengerSuccess = openMessengerConversation(messengerUrl);
+    messengerSuccess = openMessengerConversation(messengerUrl, allowRedirect);
   } else {
     console.log('🐛 Debug mode: Messenger not opened. Manually navigate to:', messengerUrl);
     console.log('📋 Clipboard should contain:', hasImage ? 'Text + Image' : 'Text only');
@@ -361,5 +377,227 @@ export const getInstructionMessage = (result: SmartLauncherResult): string => {
     return "Messenger opened! Please copy the message manually and paste it.";
   } else {
     return "Please copy the message manually and navigate to Facebook Messenger.";
+  }
+};
+
+/**
+ * Selenium Automation Result interface
+ */
+export interface SeleniumAutomationResult {
+  success: boolean;
+  message: string;
+  duration?: string;
+  error?: string;
+  method: 'selenium';
+}
+
+/**
+ * Execute full Selenium automation - paste message and upload images automatically
+ */
+export const executeSeleniumAutomation = async (
+  message: string,
+  messengerUrl: string,
+  imageUrls?: string[],
+  sessionId?: string
+): Promise<SeleniumAutomationResult> => {
+  console.log('🚀 Executing Selenium automation...');
+  
+  try {
+    // Extract recipient from messenger URL
+    const recipient = extractFacebookIdFromProfileUrl(messengerUrl) || messengerUrl;
+    
+    if (!recipient) {
+      throw new Error('Could not extract recipient from Messenger URL');
+    }
+    
+    // Separate base64 images from file paths
+    const base64Images: string[] = [];
+    const filePaths: string[] = [];
+    
+    if (imageUrls && imageUrls.length > 0) {
+      for (const url of imageUrls) {
+        if (url.startsWith('data:image')) {
+          base64Images.push(url);
+        } else {
+          filePaths.push(url);
+        }
+      }
+    }
+    
+    console.log(`📷 Image analysis: ${base64Images.length} base64 images, ${filePaths.length} file paths`);
+    
+    // Convert base64 images to temporary files if needed
+    let convertedFilePaths: string[] = [];
+    if (base64Images.length > 0) {
+      console.log('🔄 Converting base64 post images to temporary files...');
+      
+      const conversionResponse = await fetch('http://localhost:8000/convert-base64-images', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          base64_images: base64Images
+        })
+      });
+      
+      if (!conversionResponse.ok) {
+        throw new Error(`Base64 conversion failed: ${conversionResponse.status}`);
+      }
+      
+      const conversionResult = await conversionResponse.json();
+      if (conversionResult.success) {
+        convertedFilePaths = conversionResult.file_paths;
+        console.log(`✅ Converted ${convertedFilePaths.length} base64 images to temporary files`);
+      } else {
+        console.warn(`⚠️ Base64 conversion failed: ${conversionResult.error}`);
+      }
+    }
+    
+    // Combine all image paths (converted base64 + original file paths)
+    const imagePaths = [...convertedFilePaths, ...filePaths];
+    
+    // Generate unique session ID if not provided
+    const actualSessionId = sessionId || `user_${Date.now()}`;
+    
+    console.log(`🎯 Sending via Selenium - Recipient: ${recipient}, Session: ${actualSessionId}`);
+    console.log(`📝 Message: ${message.substring(0, 100)}...`);
+    console.log(`🖼️ Total images: ${imagePaths.length} (${convertedFilePaths.length} post images + ${filePaths.length} gallery images)`);
+    console.log(`🔗 Target URL: ${messengerUrl}`);
+    
+    // Call the messenger automation API
+    console.log('📡 Making API request to Selenium backend...');
+    const response = await fetch('http://localhost:8000/messenger/send-message', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      mode: 'cors',
+      body: JSON.stringify({
+        session_id: actualSessionId,
+        recipient: recipient,
+        message: message,
+        images: imagePaths
+      })
+    });
+    
+    if (!response.ok) {
+      throw new Error(`API request failed: ${response.status} ${response.statusText}`);
+    }
+    
+    const data = await response.json();
+    
+    if (data.status === 'success') {
+      console.log(`✅ Selenium automation completed successfully in ${data.duration}`);
+      return {
+        success: true,
+        message: `Message sent automatically via browser automation in ${data.duration}!`,
+        duration: data.duration,
+        method: 'selenium'
+      };
+    } else {
+      console.error(`❌ Selenium automation failed: ${data.error}`);
+      return {
+        success: false,
+        message: `Automation failed: ${data.error}`,
+        error: data.error,
+        method: 'selenium'
+      };
+    }
+    
+  } catch (error) {
+    console.error('❌ Selenium automation error:', error);
+    return {
+      success: false,
+      message: `Automation error: ${error.message}`,
+      error: error.message,
+      method: 'selenium'
+    };
+  }
+};
+
+/**
+ * Enhanced Smart Launcher with automation mode selection
+ */
+export interface EnhancedSmartLauncherResult {
+  success: boolean;
+  message: string;
+  method: 'clipboard' | 'selenium';
+  clipboardSuccess?: boolean;
+  messengerSuccess?: boolean;
+  hasImage?: boolean;
+  duration?: string;
+  error?: string;
+}
+
+export const executeEnhancedSmartLauncher = async (
+  message: string,
+  messengerUrl: string,
+  imageUrls?: string[],
+  options: {
+    method: 'clipboard' | 'selenium';
+    debugMode?: boolean;
+    sessionId?: string;
+  } = { method: 'clipboard' }
+): Promise<EnhancedSmartLauncherResult> => {
+  console.log(`🚀 Executing Enhanced Smart Launcher - Method: ${options.method}`);
+  
+  if (options.method === 'selenium') {
+    // For Selenium mode: Open Messenger tab AND run automation
+    console.log('🎯 Selenium mode: Opening Messenger tab + running browser automation');
+    
+    // Step 1: Open Messenger tab for reference (but don't redirect main page if popup blocked)
+    console.log(`🌐 Opening reference Messenger tab: ${messengerUrl}`);
+    const messengerTabSuccess = openMessengerConversation(messengerUrl, false);
+    
+    if (messengerTabSuccess) {
+      console.log('✅ Successfully opened Messenger reference tab');
+    } else {
+      console.log('⚠️ Messenger reference tab blocked by popup blocker');
+    }
+    
+    // Step 2: Run Selenium automation 
+    const result = await executeSeleniumAutomation(
+      message, 
+      messengerUrl, 
+      imageUrls, 
+      options.sessionId
+    );
+    
+    // Combine results
+    let finalMessage = result.message;
+    if (messengerTabSuccess) {
+      finalMessage += " (Messenger tab also opened for reference)";
+    } else {
+      finalMessage += " (Note: Messenger tab blocked by popup blocker)";
+    }
+    
+    return {
+      success: result.success,
+      message: finalMessage,
+      method: 'selenium',
+      duration: result.duration,
+      error: result.error,
+      hasImage: imageUrls && imageUrls.length > 0
+    };
+  } else {
+    // Use existing clipboard method - allow redirect since user needs to manually paste
+    const result = await executeSmartLauncher(
+      message, 
+      messengerUrl, 
+      imageUrls, 
+      options.debugMode,
+      true  // allowRedirect = true for clipboard mode
+    );
+    
+    return {
+      success: result.success,
+      message: getInstructionMessage(result),
+      method: 'clipboard',
+      clipboardSuccess: result.clipboardSuccess,
+      messengerSuccess: result.messengerSuccess,
+      hasImage: result.hasImage,
+      error: result.error
+    };
   }
 };

@@ -55,23 +55,14 @@ class BrowserManager:
                 os.environ['CHROME_LOG_FILE'] = 'nul'
                 
                 chrome_options = Options()
-                # Enhanced Chrome arguments for maximum stability
+                # Use PROVEN working configuration from posting driver
                 chrome_options.add_argument("--no-sandbox")
                 chrome_options.add_argument("--disable-dev-shm-usage")
-                chrome_options.add_argument("--disable-extensions")
-                chrome_options.add_argument("--disable-gpu")
-                chrome_options.add_argument("--no-first-run")
-                chrome_options.add_argument("--disable-background-timer-throttling")
-                chrome_options.add_argument("--disable-renderer-backgrounding")
-                chrome_options.add_argument("--disable-backgrounding-occluded-windows")
-                chrome_options.add_argument("--disable-web-security")
-                chrome_options.add_argument("--disable-features=VizDisplayCompositor")
-                
-                # Run in visible mode
+                chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+                chrome_options.add_argument("--disable-notifications")
+                chrome_options.add_argument("--disable-popup-blocking")
                 chrome_options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
                 chrome_options.add_experimental_option('useAutomationExtension', False)
-                
-                # Suppress Chrome log noise
                 chrome_options.add_argument("--log-level=3")
                 chrome_options.add_argument("--silent")
                 
@@ -83,12 +74,11 @@ class BrowserManager:
                 # Set window size
                 chrome_options.add_argument("--window-size=1920,1080")
                 
-                # Enable remote debugging
+                # Enable remote debugging on main port
                 chrome_options.add_argument("--remote-debugging-port=9222")
                 chrome_options.add_argument("--remote-debugging-address=127.0.0.1")
                 
                 service = Service(ChromeDriverManager().install())
-                service.start()
                 
                 self.driver = webdriver.Chrome(service=service, options=chrome_options)
                 # PERFORMANCE FIX: Reduced implicit wait to prevent 73-second delays
