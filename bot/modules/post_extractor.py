@@ -13,6 +13,7 @@ from typing import List, Dict, Optional
 from selenium.webdriver.common.by import By
 from selenium.webdriver.remote.webelement import WebElement
 from selenium.webdriver.support.ui import WebDriverWait
+from modules.url_normalizer import normalize_url
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import NoSuchElementException, StaleElementReferenceException, TimeoutException
 
@@ -77,16 +78,11 @@ class PostExtractor:
             hrefs = [link.get_attribute('href') for link in post_links if link.get_attribute('href')]
             logger.info(f"Found {len(hrefs)} post links on this scroll")
             
-            # Filter and clean URLs
+            # Filter and normalize URLs
             valid_hrefs = []
             for href in hrefs:
-                if '/photo/' in href and 'fbid=' in href:
-                    # Keep photo URLs mostly intact
-                    import re
-                    clean_href = re.sub(r'&(__cft__|__tn__|notif_id|notif_t|ref)=[^&]*', '', href)
-                    clean_href = re.sub(r'&context=[^&]*', '', clean_href)
-                else:
-                    clean_href = href.split('?')[0] if '?' in href else href
+                # Use centralized URL normalization
+                clean_href = normalize_url(href)
                 
                 if self.is_valid_post_url(clean_href) and clean_href not in collected:
                     valid_hrefs.append(clean_href)

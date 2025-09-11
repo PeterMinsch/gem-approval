@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import List, Optional, Dict, Any
 from contextlib import contextmanager
 import json
+from modules.url_normalizer import normalize_url
 
 logger = logging.getLogger(__name__)
 
@@ -394,15 +395,7 @@ class BotDatabase:
     
     def is_post_processed(self, post_url: str) -> bool:
         """Check if a post has already been processed. Always use normalized URL."""
-        # For photo URLs, preserve fbid and set parameters but remove tracking
-        if '/photo/' in post_url and 'fbid=' in post_url:
-            import re
-            # Remove tracking parameters but keep fbid and set
-            norm_url = re.sub(r'&(__cft__|__tn__|notif_id|notif_t|ref)=[^&]*', '', post_url)
-            norm_url = re.sub(r'&context=[^&]*', '', norm_url)
-        else:
-            # For non-photo URLs, remove all query parameters
-            norm_url = post_url.split('?')[0].split('#')[0] if post_url else post_url
+        norm_url = normalize_url(post_url)
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT id FROM processed_posts WHERE post_url = ?", (norm_url,))
@@ -411,7 +404,9 @@ class BotDatabase:
     def mark_post_processed(self, post_url: str, post_text: str = "", post_type: str = "", 
                            comment_generated: bool = False, comment_text: str = "", 
                            error_message: str = "") -> bool:
-        """Mark a post as processed"""
+        """Mark a post as processed. Use centralized URL normalization."""
+        norm_url = normalize_url(post_url)
+            
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
@@ -419,9 +414,9 @@ class BotDatabase:
                     INSERT OR REPLACE INTO processed_posts 
                     (post_url, post_text, post_type, comment_generated, comment_text, error_message)
                     VALUES (?, ?, ?, ?, ?, ?)
-                """, (post_url, post_text, post_type, comment_generated, comment_text, error_message))
+                """, (norm_url, post_text, post_type, comment_generated, comment_text, error_message))
                 conn.commit()
-                logger.info(f"Marked post as processed: {post_url}")
+                logger.info(f"Marked post as processed: {norm_url}")
                 return True
         except Exception as e:
             logger.error(f"Failed to mark post as processed: {e}")
@@ -440,15 +435,9 @@ class BotDatabase:
             # Convert categories to JSON string
             categories_json = json.dumps(detected_categories or [])
             
-            # For photo URLs, preserve parameters; for others, normalize
-            if '/photo/' in post_url and 'fbid=' in post_url:
-                # Photo URLs need their parameters to work properly
-                norm_url = post_url
-                logger.info(f"Preserving photo URL with parameters: {norm_url}")
-            else:
-                # Normalize URL by removing query parameters and fragments
-                norm_url = post_url.split('?')[0].split('#')[0] if post_url else post_url
-                logger.info(f"Normalized non-photo URL: {norm_url}")
+            # Use centralized URL normalization
+            norm_url = normalize_url(post_url)
+            logger.info(f"Normalized URL for queue: {norm_url}")
             
             # DEBUGGING: Log what we're about to store
             logger.debug(f"DB_STORAGE: About to store post_author_url: '{post_author_url}'")

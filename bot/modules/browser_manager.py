@@ -74,6 +74,12 @@ class BrowserManager:
                 # Set window size
                 chrome_options.add_argument("--window-size=1920,1080")
                 
+                # Connection pool optimization arguments
+                chrome_options.add_argument("--max-connections-per-host=10")
+                chrome_options.add_argument("--max-connections-per-proxy=8") 
+                chrome_options.add_argument("--aggressive-cache-discard")
+                chrome_options.add_argument("--disable-background-networking")
+                
                 # Enable remote debugging on main port
                 chrome_options.add_argument("--remote-debugging-port=9222")
                 chrome_options.add_argument("--remote-debugging-address=127.0.0.1")

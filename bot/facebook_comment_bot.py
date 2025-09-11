@@ -13,6 +13,7 @@ import uuid
 from typing import Dict, List, Tuple, Optional, Set
 from dataclasses import dataclass
 from dotenv import load_dotenv
+from modules.url_normalizer import normalize_url
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
@@ -2518,19 +2519,22 @@ class FacebookAICommentBot:
                                 # Store original URL for database/UI
                                 original_post_url = post_url
                                 
-                                # For photo URLs, keep the original URL with parameters
-                                if '/photo/' in post_url and 'fbid=' in post_url:
-                                    # Photo URLs need their parameters to work properly
-                                    navigation_url = post_url
-                                    logger.debug(f"Using photo URL with parameters: {navigation_url}")
-                                else:
-                                    # For other URLs, remove query parameters for navigation but keep original for storage
-                                    navigation_url = post_url.split('?')[0] if '?' in post_url else post_url
-                                    logger.debug(f"Navigation URL: {navigation_url}, Original: {original_post_url}")
+                                # Use centralized URL normalization for consistent storage
+                                normalized_post_url = normalize_url(post_url)
+                                logger.debug(f"Original URL: {post_url}")
+                                logger.debug(f"Normalized URL: {normalized_post_url}")
                                 
+                                # Navigate to the post (some photo URLs may need original parameters for navigation)
+                                if '/photo/' in post_url and 'fbid=' in post_url:
+                                    # Photo URLs may need parameters for navigation
+                                    navigation_url = post_url
+                                else:
+                                    # Use normalized URL for navigation
+                                    navigation_url = normalized_post_url
+                                    
                                 self.driver.get(navigation_url)
                                 logger.debug(f"Navigated to: {navigation_url}")
-                                logger.debug(f"Will store as: {original_post_url}")
+                                logger.debug(f"Will store as: {normalized_post_url}")
                                 
                                 # Verify we're on the right page after navigation
                                 actual_url = self.driver.current_url
@@ -2587,11 +2591,11 @@ class FacebookAICommentBot:
                                             logger.info(f"Image-only post added to queue with ID: {queue_id}")
                                             new_posts += 1
                                         
-                                        db.save_processed_post(original_post_url, post_text, post_type, ai_comment)
+                                        db.save_processed_post(normalized_post_url, post_text, post_type, ai_comment)
                                         break
                                     else:
                                         logger.info(f"No meaningful content found, skipping post: {original_post_url}")
-                                        db.save_processed_post(original_post_url, "", "skipped", "")
+                                        db.save_processed_post(normalized_post_url, "", "skipped", "")
                                         continue
                                 
                                 # Extract images from the post
@@ -2639,7 +2643,7 @@ class FacebookAICommentBot:
                                     logger.error("Failed to add comment to queue")
                                 
                                 # Mark post as processed - use original URL
-                                db.save_processed_post(original_post_url, post_text, post_type, ai_comment)
+                                db.save_processed_post(normalized_post_url, post_text, post_type, ai_comment)
                                 logger.debug(f"Post processed successfully: {original_post_url}")
                                 
                                 break  # Success, exit retry loop

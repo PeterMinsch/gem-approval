@@ -13,6 +13,7 @@ from datetime import datetime
 import os
 import json
 import uuid
+from modules.url_normalizer import normalize_url
 import io
 from io import BytesIO
 from selenium.webdriver.common.by import By
@@ -886,8 +887,8 @@ def run_bot_with_queuing(bot_instance: FacebookAICommentBot, max_scrolls: int = 
                 logger.info("Processing specific post directly...")
                 time.sleep(2)  # Reduced wait for page to load
                 
-                # Clean the URL
-                clean_url = target_url.split('?')[0] if '?' in target_url else target_url
+                # Use centralized URL normalization
+                clean_url = normalize_url(target_url)
                 
                 try:
                     # Extract post text
@@ -939,15 +940,8 @@ def run_bot_with_queuing(bot_instance: FacebookAICommentBot, max_scrolls: int = 
                             if not bot_status["is_running"]:
                                 break
                             
-                            # For photo URLs, preserve fbid and set parameters
-                            if '/photo/' in post_url and 'fbid=' in post_url:
-                                # Keep photo URLs mostly intact, remove only tracking parameters
-                                import re
-                                clean_url = re.sub(r'&(__cft__|__tn__|notif_id|notif_t|ref)=[^&]*', '', post_url)
-                                clean_url = re.sub(r'&context=[^&]*', '', clean_url)
-                            else:
-                                # For non-photo URLs, remove all query parameters  
-                                clean_url = post_url.split('?')[0] if '?' in post_url else post_url
+                            # Use centralized URL normalization
+                            clean_url = normalize_url(post_url)
                             
                             if db.is_post_processed(clean_url):
                                 logger.info(f"Skipping already processed post: {clean_url}")
