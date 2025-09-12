@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { Badge } from "@/components/ui/badge";
+import { API_BASE_URL } from "../config/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardFooter, CardHeader } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
@@ -54,7 +55,7 @@ export function CommentCard({ comment, onApprove, onReject }: CommentCardProps) 
   const loadDetectedCategories = async () => {
     setIsLoadingCategories(true);
     try {
-      const response = await fetch(`http://localhost:8000/api/comments/${comment.id}/categories`);
+      const response = await fetch(`${API_BASE_URL}/api/comments/${comment.id}/categories`);
       if (response.ok) {
         const data = await response.json();
         setDetectedCategories(data.categories || []);
@@ -78,7 +79,7 @@ export function CommentCard({ comment, onApprove, onReject }: CommentCardProps) 
       
       // Load image packs (existing code)
       try {
-        const response = await fetch('http://localhost:8000/api/image-packs');
+        const response = await fetch('${API_BASE_URL}/api/image-packs');
         if (response.ok) {
           const packs = await response.json();
           setImagePacks(packs);

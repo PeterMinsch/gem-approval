@@ -1,5 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { Badge } from '@/components/ui/badge';
+import { API_BASE_URL } from "../config/api";
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -227,7 +228,7 @@ export function ImageGallery({
       >
         <div className="aspect-square relative bg-muted">
           <img
-            src={`http://localhost:8000/${image.filename}`}
+            src={`${API_BASE_URL}/${image.filename}`}
             alt={image.description || image.filename}
             className="w-full h-full object-cover"
             loading="lazy"
@@ -335,7 +336,7 @@ export function ImageGallery({
                     />
                     <div className="w-12 h-12 rounded overflow-hidden bg-muted flex-shrink-0">
                       <img
-                        src={`http://localhost:8000/${image.filename}`}
+                        src={`${API_BASE_URL}/${image.filename}`}
                         alt={image.description}
                         className="w-full h-full object-cover"
                         loading="lazy"

@@ -1,0 +1,66 @@
+# Dependencies
+node_modules/
+bot/__pycache__/
+bot/modules/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+
+# Environment files (will be passed via docker-compose)
+.env
+.env.local
+.env.development
+.env.production
+
+# Build outputs
+dist/
+build/
+*.log
+logs/*.log
+
+# Chrome data (will be mounted as volume)
+chrome_data/
+chrome_posting_temp_*/
+
+# Database (will be mounted as volume)
+bot_data.db
+bot_data.db-journal
+
+# Git
+.git/
+.gitignore
+.github/
+
+# Documentation
+*.md
+!README.md
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+temp/
+tmp/
+
+# Test files
+test/
+tests/
+*test*.py
+*debug*.py
+
+# Development scripts
+simple_test.py
+debug_*.py
+test_*.py
+analyze_logs.py

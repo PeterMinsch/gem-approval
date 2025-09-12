@@ -1,0 +1,53 @@
+# Use Python 3.11 as base image
+FROM python:3.11-slim
+
+# Set working directory
+WORKDIR /app
+
+# Install system dependencies including Chrome
+RUN apt-get update && apt-get install -y \
+    wget \
+    curl \
+    unzip \
+    xvfb \
+    xauth \
+    gnupg \
+    software-properties-common \
+    && wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | apt-key add - \
+    && sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google-chrome.list' \
+    && apt-get update \
+    && apt-get install -y google-chrome-stable \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create logs directory
+RUN mkdir -p /app/logs
+
+# Copy requirements first for better caching
+COPY bot/requirements.txt /app/
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy bot application
+COPY bot/ /app/bot/
+COPY architecture.md /app/
+COPY README.md /app/
+
+# Set environment variables
+ENV PYTHONPATH=/app
+ENV DISPLAY=:99
+ENV CHROME_BIN=/usr/bin/google-chrome
+ENV CHROME_PATH=/usr/bin/google-chrome
+
+# Create non-root user for security
+RUN useradd -m -u 1000 botuser && \
+    chown -R botuser:botuser /app
+USER botuser
+
+# Expose port
+EXPOSE 8000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+# Start command with virtual display
+CMD ["bash", "-c", "Xvfb :99 -screen 0 1920x1080x24 & cd bot && python -m uvicorn api:app --host 0.0.0.0 --port 8000"]

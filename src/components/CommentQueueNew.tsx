@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { debounce } from "lodash";
+import { API_BASE_URL } from "../config/api";
 import { Button } from "./ui/button";
 import {
   Card,
@@ -95,7 +96,7 @@ export const CommentQueue: React.FC = () => {
 
   const fetchComments = async () => {
     try {
-      const response = await fetch("http://localhost:8000/comments/queue");
+      const response = await fetch("${API_BASE_URL}/comments/queue");
       if (response.ok) {
         const data = await response.json();
         console.log("[DEBUG] CommentQueue API response:", data);
@@ -110,7 +111,7 @@ export const CommentQueue: React.FC = () => {
 
   const fetchTemplates = async () => {
     try {
-      const response = await fetch("http://localhost:8000/api/templates");
+      const response = await fetch("${API_BASE_URL}/api/templates");
       if (response.ok) {
         const templatesArray = await response.json();
         const grouped = templatesArray.reduce((acc: Record<string, Template[]>, template: any) => {
@@ -134,7 +135,7 @@ export const CommentQueue: React.FC = () => {
 
   const fetchImagePacks = async () => {
     try {
-      const response = await fetch('http://localhost:8000/api/image-packs');
+      const response = await fetch('${API_BASE_URL}/api/image-packs');
       if (response.ok) {
         const packs = await response.json();
         setImagePacks(packs);
@@ -149,7 +150,7 @@ export const CommentQueue: React.FC = () => {
   const handleApprove = async (commentId: string) => {
     try {
       const images = selectedImages[commentId] || [];
-      const response = await fetch("http://localhost:8000/comments/approve", {
+      const response = await fetch("${API_BASE_URL}/comments/approve", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -179,7 +180,7 @@ export const CommentQueue: React.FC = () => {
 
   const handleReject = async (commentId: string, reason: string) => {
     try {
-      const response = await fetch("http://localhost:8000/comments/approve", {
+      const response = await fetch("${API_BASE_URL}/comments/approve", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -242,7 +243,7 @@ export const CommentQueue: React.FC = () => {
   const loadDetectedCategories = async (commentId: string) => {
     setLoadingCategories(prev => ({ ...prev, [commentId]: true }));
     try {
-      const response = await fetch(`http://localhost:8000/api/comments/${commentId}/categories`);
+      const response = await fetch(`${API_BASE_URL}/api/comments/${commentId}/categories`);
       if (response.ok) {
         const data = await response.json();
         setDetectedCategories(prev => ({
@@ -296,7 +297,7 @@ export const CommentQueue: React.FC = () => {
 
       setAnalyzingText(prev => ({ ...prev, [commentId]: true }));
       try {
-        const response = await fetch('http://localhost:8000/api/analyze-text', {
+        const response = await fetch('${API_BASE_URL}/api/analyze-text', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ text })
@@ -634,7 +635,7 @@ export const CommentQueue: React.FC = () => {
                                 {(selectedImages[comment.id] || []).map((image, index) => (
                                   <div key={index} className="relative group">
                                     <img
-                                      src={image.startsWith('http') ? image : `http://localhost:8000/${image}`}
+                                      src={image.startsWith('http') ? image : `${API_BASE_URL}/${image}`}
                                       alt={image}
                                       className="w-16 h-16 object-cover rounded-lg border-2 border-white shadow-md bg-white group-hover:scale-105 transition-transform duration-200"
                                       onError={(e) => {

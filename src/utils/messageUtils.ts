@@ -3,6 +3,8 @@
  * Handles clipboard operations and Messenger URL launching
  */
 
+import { API_BASE_URL } from '../config/api';
+
 /**
  * Fetch image from URL and convert to Blob
  * Handles CORS issues and Facebook CDN images
@@ -31,7 +33,7 @@ export const fetchImageAsBlob = async (imageUrl: string): Promise<Blob | null> =
       console.log('🔄 Facebook CDN detected, using proxy directly...');
       const cleanUrl = imageUrl.trim();
       try {
-        const proxyUrl = `http://localhost:8000/proxy-image?url=${encodeURIComponent(cleanUrl)}`;
+        const proxyUrl = `${API_BASE_URL}/proxy-image?url=${encodeURIComponent(cleanUrl)}`;
         const response = await fetch(proxyUrl);
         
         if (response.ok) {
@@ -70,7 +72,7 @@ export const fetchImageAsBlob = async (imageUrl: string): Promise<Blob | null> =
       
       // Try backend proxy as fallback
       try {
-        const proxyUrl = `http://localhost:8000/proxy-image?url=${encodeURIComponent(cleanUrl)}`;
+        const proxyUrl = `${API_BASE_URL}/proxy-image?url=${encodeURIComponent(cleanUrl)}`;
         console.log(`🔄 Trying proxy: ${proxyUrl.substring(0, 80)}...`);
         const response = await fetch(proxyUrl);
         
@@ -431,7 +433,7 @@ export const executeSeleniumAutomation = async (
     if (base64Images.length > 0) {
       console.log('🔄 Converting base64 post images to temporary files...');
       
-      const conversionResponse = await fetch('http://localhost:8000/convert-base64-images', {
+      const conversionResponse = await fetch('${API_BASE_URL}/convert-base64-images', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -467,7 +469,7 @@ export const executeSeleniumAutomation = async (
     
     // Call the messenger automation API
     console.log('📡 Making API request to Selenium backend...');
-    const response = await fetch('http://localhost:8000/messenger/send-message', {
+    const response = await fetch('${API_BASE_URL}/messenger/send-message', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

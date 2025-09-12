@@ -7,3 +7,7 @@ fastapi
 uvicorn[standard]
 pydantic
 requests
+Pillow
+pytesseract
+python-multipart
+anthropic

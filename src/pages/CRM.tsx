@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-
+import { API_BASE_URL } from "../config/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -76,7 +76,7 @@ const CRM = () => {
 
   const fetchPosts = async () => {
     try {
-      const response = await fetch("http://localhost:8000/comments/queue");
+      const response = await fetch("${API_BASE_URL}/comments/queue");
 
       if (response.ok) {
         const data = await response.json();
@@ -429,7 +429,7 @@ const PostCard = ({ post, fetchPosts, ...otherProps }: PostCardProps) => {
 
       // First save the edited comment
       const saveResponse = await fetch(
-        "http://localhost:8000/comments/approve",
+        "${API_BASE_URL}/comments/approve",
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -450,7 +450,7 @@ const PostCard = ({ post, fetchPosts, ...otherProps }: PostCardProps) => {
 
         // Then post immediately using real-time browser integration
         const postResponse = await fetch(
-          `http://localhost:8000/api/comments/${post.id}/submit`,
+          `${API_BASE_URL}/api/comments/${post.id}/submit`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },

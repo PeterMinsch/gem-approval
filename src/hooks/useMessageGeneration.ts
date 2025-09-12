@@ -4,6 +4,7 @@
  */
 
 import { useState, useCallback } from 'react';
+import { API_BASE_URL } from '../config/api';
 
 export interface MessageGenerationResult {
   success: boolean;
@@ -45,7 +46,7 @@ export const useMessageGeneration = (): UseMessageGenerationReturn => {
       const startTime = performance.now();
       
       // Call the message generation API
-      const response = await fetch(`http://localhost:8000/generate-message/${commentId}`, {
+      const response = await fetch(`${API_BASE_URL}/generate-message/${commentId}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

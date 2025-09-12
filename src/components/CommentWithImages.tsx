@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Badge } from '@/components/ui/badge';
+import { API_BASE_URL } from "../config/api";
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogTrigger } from '@/components/ui/dialog';
 import { Card, CardContent } from '@/components/ui/card';
@@ -68,7 +69,7 @@ export function CommentWithImages({
       <DialogContent className="max-w-4xl w-full">
         <div className="relative">
           <img
-            src={`http://localhost:8000/${images[selectedImageIndex]}`}
+            src={`${API_BASE_URL}/${images[selectedImageIndex]}`}
             alt={`Image ${selectedImageIndex + 1}`}
             className="w-full h-auto max-h-[70vh] object-contain rounded-lg"
           />
@@ -84,7 +85,7 @@ export function CommentWithImages({
                   }`}
                 >
                   <img
-                    src={`http://localhost:8000/${image}`}
+                    src={`${API_BASE_URL}/${image}`}
                     alt={`Thumbnail ${index + 1}`}
                     className="w-full h-full object-cover"
                   />
@@ -134,7 +135,7 @@ export function CommentWithImages({
               <div className="relative group">
                 <div className="relative rounded-lg overflow-hidden bg-gray-100">
                   <img
-                    src={`http://localhost:8000/${sortedImages[0]}`}
+                    src={`${API_BASE_URL}/${sortedImages[0]}`}
                     alt="Main image"
                     className="w-full max-w-md rounded-lg shadow-sm hover:shadow-md transition-shadow cursor-pointer"
                     loading="lazy"
@@ -184,7 +185,7 @@ export function CommentWithImages({
                           onClick={() => setSelectedImageIndex(index + 1)}
                         >
                           <img
-                            src={`http://localhost:8000/${image}`}
+                            src={`${API_BASE_URL}/${image}`}
                             alt={`Additional image ${index + 2}`}
                             className="w-full h-full object-cover group-hover:scale-105 transition-transform"
                             loading="lazy"
@@ -198,7 +199,7 @@ export function CommentWithImages({
                       </DialogTrigger>
                       <DialogContent className="max-w-4xl">
                         <img
-                          src={`http://localhost:8000/${image}`}
+                          src={`${API_BASE_URL}/${image}`}
                           alt={`Full size image ${index + 2}`}
                           className="w-full h-auto max-h-[70vh] object-contain rounded-lg"
                         />

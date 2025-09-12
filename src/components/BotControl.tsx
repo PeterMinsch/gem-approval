@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { Button } from "./ui/button";
+import { API_BASE_URL } from "../config/api";
 import {
   Card,
   CardContent,
@@ -85,7 +86,7 @@ export const BotControl: React.FC = () => {
   const checkConnection = async () => {
     setRetryLoading(true);
     try {
-      const response = await fetch("http://localhost:8000/health");
+      const response = await fetch(`${API_BASE_URL}/health`);
       setIsConnected(response.ok);
       if (response.ok) {
         fetchBotStatus();
@@ -99,7 +100,7 @@ export const BotControl: React.FC = () => {
 
   const fetchBotStatus = async () => {
     try {
-      const response = await fetch("http://localhost:8000/bot/status");
+      const response = await fetch(`${API_BASE_URL}/bot/status`);
       if (response.ok) {
         const status = await response.json();
         setBotStatus(status);
@@ -116,7 +117,7 @@ export const BotControl: React.FC = () => {
     if (!isConnected) return;
 
     try {
-      const response = await fetch("http://localhost:8000/bot/screenshot");
+      const response = await fetch(`${API_BASE_URL}/bot/screenshot`);
       if (response.ok) {
         const data = await response.json();
         setBrowserScreenshot(data.screenshot);
@@ -139,7 +140,7 @@ export const BotControl: React.FC = () => {
     if (!isConnected) return;
 
     try {
-      const response = await fetch("http://localhost:8000/bot/browser-info");
+      const response = await fetch(`${API_BASE_URL}/bot/browser-info`);
       if (response.ok) {
         const data = await response.json();
         setBrowserInfo(data);
@@ -154,7 +155,7 @@ export const BotControl: React.FC = () => {
 
     setIsLoadingScreenshot(true);
     try {
-      const response = await fetch("http://localhost:8000/bot/live-screenshot");
+      const response = await fetch(`${API_BASE_URL}/bot/live-screenshot`);
       if (response.ok) {
         const data = await response.json();
         setLiveScreenshot(data.screenshot);
@@ -266,7 +267,7 @@ export const BotControl: React.FC = () => {
     });
 
     try {
-      const response = await fetch("http://localhost:8000/bot/start", {
+      const response = await fetch(`${API_BASE_URL}/bot/start`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -314,7 +315,7 @@ export const BotControl: React.FC = () => {
     addActivityLog("warning", "Stopping bot...");
 
     try {
-      const response = await fetch("http://localhost:8000/bot/stop", {
+      const response = await fetch(`${API_BASE_URL}/bot/stop`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ force: false }),
@@ -353,7 +354,7 @@ export const BotControl: React.FC = () => {
 
     setLoading(true);
     try {
-      const response = await fetch("http://localhost:8000/bot/database/clear", {
+      const response = await fetch(`${API_BASE_URL}/bot/database/clear`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
       });
@@ -459,7 +460,7 @@ export const BotControl: React.FC = () => {
               Cannot connect to the bot API. Please ensure the API server is
               running on{" "}
               <code className="bg-gray-100 px-2 py-1 rounded">
-                http://localhost:8000
+                {API_BASE_URL}
               </code>
             </AlertDescription>
           </Alert>

@@ -56,6 +56,7 @@ class BrowserManager:
                 
                 chrome_options = Options()
                 # Use PROVEN working configuration from posting driver
+                chrome_options.add_argument("--headless")  # Run in headless mode
                 chrome_options.add_argument("--no-sandbox")
                 chrome_options.add_argument("--disable-dev-shm-usage")
                 chrome_options.add_argument("--disable-blink-features=AutomationControlled")
@@ -161,12 +162,12 @@ class BrowserManager:
                 os.environ['CHROME_LOG_FILE'] = 'nul'
                 
                 chrome_options = Options()
+                chrome_options.add_argument("--headless")  # Run in headless mode
                 chrome_options.add_argument("--no-sandbox")
                 chrome_options.add_argument("--disable-dev-shm-usage")
                 chrome_options.add_argument("--disable-blink-features=AutomationControlled")
                 chrome_options.add_argument("--disable-notifications")
                 chrome_options.add_argument("--disable-popup-blocking")
-                chrome_options.add_argument("--start-minimized")
                 chrome_options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
                 chrome_options.add_experimental_option('useAutomationExtension', False)
                 chrome_options.add_argument("--log-level=3")

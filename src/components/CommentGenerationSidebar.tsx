@@ -1,5 +1,6 @@
 import React from "react";
 import { Button } from "./ui/button";
+import { API_BASE_URL } from "../config/api";
 import { Badge } from "./ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
 import { Textarea } from "./ui/textarea";
@@ -189,7 +190,7 @@ export const CommentGenerationSidebar: React.FC<CommentGenerationSidebarProps> =
                   {selectedImages.map((image, index) => (
                     <div key={index} className="relative group">
                       <img
-                        src={image.startsWith('http') ? image : `http://localhost:8000/${image}`}
+                        src={image.startsWith('http') ? image : `${API_BASE_URL}/${image}`}
                         alt={image}
                         className="w-12 h-12 object-cover rounded border-2 border-white shadow-sm"
                       />
