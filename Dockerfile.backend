@@ -28,8 +28,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy bot application
 COPY bot/ /app/bot/
-COPY architecture.md /app/
-COPY README.md /app/
 
 # Set environment variables
 ENV PYTHONPATH=/app
