@@ -239,5 +239,14 @@ CONFIG = {
         "max_retries_per_post": 3
     },
     
+    # Smart scanning configuration
+    "smart_scanning": {
+        "enabled": True,  # Set to False to revert to old continuous scanning
+        "initial_scan_break_minutes": 15,  # Break after initial deep scan
+        "incremental_scan_break_minutes": 15,  # Break between incremental scans
+        "stop_at_processed_posts": True,  # Stop incremental scans at first processed post
+        "stop_at_yesterday": True  # Stop initial scan when reaching yesterday's posts
+    },
+    
     "POST_URL": "https://www.facebook.com/groups/5440421919361046"
 }

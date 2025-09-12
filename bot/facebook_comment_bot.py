@@ -13,6 +13,7 @@ import uuid
 from typing import Dict, List, Tuple, Optional, Set
 from dataclasses import dataclass
 from dotenv import load_dotenv
+from modules.url_normalizer import normalize_url
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
@@ -1094,6 +1095,19 @@ class FacebookAICommentBot:
             self.post_extractor = PostExtractor(self.driver, self.config)
             self.interaction_handler = InteractionHandler(self.driver, self.config)
             self.image_handler = ImageHandler(self.driver, self.config)
+            
+            # Sync session to posting driver if available
+            logger.debug(f"🔍 Session sync check - browser_manager exists: {hasattr(self, 'browser_manager')}")
+            if hasattr(self, 'browser_manager'):
+                logger.debug(f"🔍 Session sync check - posting_driver exists: {self.browser_manager.posting_driver is not None}")
+                if self.browser_manager.posting_driver:
+                    logger.info("🔄 Syncing session to posting driver...")
+                    self.browser_manager.sync_posting_driver_session()
+                else:
+                    logger.debug("ℹ️ Posting driver not available for session sync")
+            else:
+                logger.debug("ℹ️ BrowserManager not available for session sync")
+            
             logger.info("✅ All modules initialized successfully")
         
         return self.driver
@@ -1252,9 +1266,38 @@ class FacebookAICommentBot:
             return text
 
     def is_post_from_today(self):
-        # TEMPORARILY DISABLED FOR TESTING - Always return True
-        # TODO: Re-implement proper date checking after testing
-        return True
+        """Check if the current post is from today - used for initial deep scan stopping condition"""
+        try:
+            # Look for timestamp elements that indicate when the post was made
+            time_indicators = self.driver.find_elements(By.XPATH, "//a[contains(@href, '/posts/') or contains(@href, '/photo/')]//span[contains(text(), 'h') or contains(text(), 'm') or contains(text(), 'd') or contains(text(), 'ago')]")
+            
+            if not time_indicators:
+                # Fallback - look for any element with time-related text
+                time_indicators = self.driver.find_elements(By.XPATH, "//*[contains(text(), 'h') or contains(text(), 'm') or contains(text(), 'd') or contains(text(), 'ago') or contains(text(), 'yesterday')]")
+            
+            for element in time_indicators:
+                text = element.text.lower().strip()
+                
+                # Check for yesterday or older posts
+                if any(indicator in text for indicator in ['yesterday', 'days ago', 'weeks ago', 'months ago', 'years ago']):
+                    logger.debug(f"Found old post indicator: '{text}' - post is NOT from today")
+                    return False
+                
+                # Extract numeric values for day indicators
+                if 'd' in text and 'ago' in text:
+                    # Look for patterns like "1d", "2d ago", etc.
+                    import re
+                    day_match = re.search(r'(\d+)d', text)
+                    if day_match and int(day_match.group(1)) >= 1:
+                        logger.debug(f"Found day indicator: '{text}' - post is NOT from today")
+                        return False
+            
+            # If no old indicators found, assume it's from today
+            return True
+            
+        except Exception as e:
+            logger.warning(f"Error checking post date: {e}")
+            return True  # Assume recent if we can't determine
 
     def is_post_accessible(self, post_url: str) -> bool:
         """Check if a post is actually accessible and not broken/removed"""
@@ -2492,9 +2535,18 @@ class FacebookAICommentBot:
             logger.info(f"Loaded Facebook URL: {url}")
 
             if '/groups/' in url and '/posts/' not in url:
-                logger.info("Detected group URL. Entering continuous scan mode for today's posts.")
+                logger.info("Detected group URL. Entering smart scanning mode.")
+                
+                # Track if this is the first run or an incremental run
+                first_run_complete = False
+                
                 while True:
-                    logger.info("Starting a new scan cycle for today's posts...")
+                    if not first_run_complete:
+                        logger.info("🚀 Starting INITIAL DEEP SCAN - will run until yesterday's posts...")
+                        scan_type = "initial_deep_scan"
+                    else:
+                        logger.info("⚡ Starting INCREMENTAL SCAN - will stop at first processed post...")
+                        scan_type = "incremental_scan"
                     
                     # Navigate back to the group feed to get fresh content
                     logger.info("Refreshing group feed to check for new posts...")
@@ -2504,9 +2556,17 @@ class FacebookAICommentBot:
                     all_post_links = self.scroll_and_collect_post_links()
                     logger.info(f"Collected {len(all_post_links)} post links from feed.")
                     new_posts = 0
+                    processed_post_encountered = False
                     
                     for post_url in all_post_links:
-                        if db.is_post_processed(post_url):
+                        # For incremental scans, stop at first processed post
+                        if scan_type == "incremental_scan" and db.is_post_processed(post_url):
+                            logger.info(f"✅ Incremental scan complete - encountered processed post: {post_url}")
+                            processed_post_encountered = True
+                            break
+                        
+                        # For initial deep scan, just skip processed posts and continue
+                        if scan_type == "initial_deep_scan" and db.is_post_processed(post_url):
                             logger.debug(f"Skipping already processed post: {post_url}")
                             continue
                             
@@ -2518,19 +2578,22 @@ class FacebookAICommentBot:
                                 # Store original URL for database/UI
                                 original_post_url = post_url
                                 
-                                # For photo URLs, keep the original URL with parameters
-                                if '/photo/' in post_url and 'fbid=' in post_url:
-                                    # Photo URLs need their parameters to work properly
-                                    navigation_url = post_url
-                                    logger.debug(f"Using photo URL with parameters: {navigation_url}")
-                                else:
-                                    # For other URLs, remove query parameters for navigation but keep original for storage
-                                    navigation_url = post_url.split('?')[0] if '?' in post_url else post_url
-                                    logger.debug(f"Navigation URL: {navigation_url}, Original: {original_post_url}")
+                                # Use centralized URL normalization for consistent storage
+                                normalized_post_url = normalize_url(post_url)
+                                logger.debug(f"Original URL: {post_url}")
+                                logger.debug(f"Normalized URL: {normalized_post_url}")
                                 
+                                # Navigate to the post (some photo URLs may need original parameters for navigation)
+                                if '/photo/' in post_url and 'fbid=' in post_url:
+                                    # Photo URLs may need parameters for navigation
+                                    navigation_url = post_url
+                                else:
+                                    # Use normalized URL for navigation
+                                    navigation_url = normalized_post_url
+                                    
                                 self.driver.get(navigation_url)
                                 logger.debug(f"Navigated to: {navigation_url}")
-                                logger.debug(f"Will store as: {original_post_url}")
+                                logger.debug(f"Will store as: {normalized_post_url}")
                                 
                                 # Verify we're on the right page after navigation
                                 actual_url = self.driver.current_url
@@ -2549,6 +2612,13 @@ class FacebookAICommentBot:
                                 
                                 # Quick wait for Facebook's dynamic loading
                                 time.sleep(0.5)  # Further reduced for faster processing
+                                
+                                # For initial deep scan, check if we've reached yesterday's posts
+                                if scan_type == "initial_deep_scan":
+                                    if not self.is_post_from_today():
+                                        logger.info(f"🎯 Initial deep scan stopping condition met - reached yesterday's posts at: {post_url}")
+                                        logger.info("✅ Deep scan complete! Found the boundary between today and yesterday's posts.")
+                                        break  # Break out of post processing loop
                                 
                                 # Image extraction will be handled by the CRM ingestion process
                                 logger.debug("Getting post text")
@@ -2587,11 +2657,11 @@ class FacebookAICommentBot:
                                             logger.info(f"Image-only post added to queue with ID: {queue_id}")
                                             new_posts += 1
                                         
-                                        db.save_processed_post(original_post_url, post_text, post_type, ai_comment)
+                                        db.save_processed_post(normalized_post_url, post_text, post_type, ai_comment)
                                         break
                                     else:
                                         logger.info(f"No meaningful content found, skipping post: {original_post_url}")
-                                        db.save_processed_post(original_post_url, "", "skipped", "")
+                                        db.save_processed_post(normalized_post_url, "", "skipped", "")
                                         continue
                                 
                                 # Extract images from the post
@@ -2639,7 +2709,7 @@ class FacebookAICommentBot:
                                     logger.error("Failed to add comment to queue")
                                 
                                 # Mark post as processed - use original URL
-                                db.save_processed_post(original_post_url, post_text, post_type, ai_comment)
+                                db.save_processed_post(normalized_post_url, post_text, post_type, ai_comment)
                                 logger.debug(f"Post processed successfully: {original_post_url}")
                                 
                                 break  # Success, exit retry loop
@@ -2654,8 +2724,22 @@ class FacebookAICommentBot:
                                     logger.error(f"Failed to process post: {original_post_url} | Error: {e}")
                                     break
                                     
-                    logger.info(f"Scan cycle complete. Processed {new_posts} new posts. Next scan in 3 seconds...")
-                    time.sleep(3)
+                    # Cycle completion logic
+                    if scan_type == "initial_deep_scan":
+                        logger.info(f"🎯 Initial deep scan complete! Processed {new_posts} new posts.")
+                        logger.info("✅ Marking first run as complete - switching to incremental mode.")
+                        first_run_complete = True
+                        initial_break_minutes = self.config.get('smart_scanning', {}).get('initial_scan_break_minutes', 15)
+                        logger.info(f"⏰ Taking {initial_break_minutes}-minute break before starting incremental scans...")
+                        time.sleep(initial_break_minutes * 60)
+                    elif scan_type == "incremental_scan":
+                        if processed_post_encountered:
+                            logger.info(f"⚡ Incremental scan complete! Processed {new_posts} new posts, stopped at processed post.")
+                        else:
+                            logger.info(f"⚡ Incremental scan complete! Processed {new_posts} new posts, no processed post encountered.")
+                        incremental_break_minutes = self.config.get('smart_scanning', {}).get('incremental_scan_break_minutes', 15)
+                        logger.info(f"⏰ Taking {incremental_break_minutes}-minute break before next incremental scan...")
+                        time.sleep(incremental_break_minutes * 60)
                     
         except Exception as e:
             logger.critical(f"Bot execution failed: {e}")

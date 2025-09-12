@@ -37,6 +37,8 @@ class PerformanceTimer:
         # Create performance logger
         self.logger = logging.getLogger('performance')
         self.logger.setLevel(logging.INFO)
+        # IMPORTANT: Prevent propagation to root logger
+        self.logger.propagate = False
         
         # Remove existing handlers to avoid duplicates
         self.logger.handlers.clear()

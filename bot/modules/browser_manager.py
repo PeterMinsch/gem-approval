@@ -55,23 +55,14 @@ class BrowserManager:
                 os.environ['CHROME_LOG_FILE'] = 'nul'
                 
                 chrome_options = Options()
-                # Enhanced Chrome arguments for maximum stability
+                # Use PROVEN working configuration from posting driver
                 chrome_options.add_argument("--no-sandbox")
                 chrome_options.add_argument("--disable-dev-shm-usage")
-                chrome_options.add_argument("--disable-extensions")
-                chrome_options.add_argument("--disable-gpu")
-                chrome_options.add_argument("--no-first-run")
-                chrome_options.add_argument("--disable-background-timer-throttling")
-                chrome_options.add_argument("--disable-renderer-backgrounding")
-                chrome_options.add_argument("--disable-backgrounding-occluded-windows")
-                chrome_options.add_argument("--disable-web-security")
-                chrome_options.add_argument("--disable-features=VizDisplayCompositor")
-                
-                # Run in visible mode
+                chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+                chrome_options.add_argument("--disable-notifications")
+                chrome_options.add_argument("--disable-popup-blocking")
                 chrome_options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
                 chrome_options.add_experimental_option('useAutomationExtension', False)
-                
-                # Suppress Chrome log noise
                 chrome_options.add_argument("--log-level=3")
                 chrome_options.add_argument("--silent")
                 
@@ -83,15 +74,22 @@ class BrowserManager:
                 # Set window size
                 chrome_options.add_argument("--window-size=1920,1080")
                 
-                # Enable remote debugging
+                # Connection pool optimization arguments
+                chrome_options.add_argument("--max-connections-per-host=10")
+                chrome_options.add_argument("--max-connections-per-proxy=8") 
+                chrome_options.add_argument("--aggressive-cache-discard")
+                chrome_options.add_argument("--disable-background-networking")
+                
+                # Enable remote debugging on main port
                 chrome_options.add_argument("--remote-debugging-port=9222")
                 chrome_options.add_argument("--remote-debugging-address=127.0.0.1")
                 
                 service = Service(ChromeDriverManager().install())
-                service.start()
                 
                 self.driver = webdriver.Chrome(service=service, options=chrome_options)
-                self.driver.implicitly_wait(10)
+                # PERFORMANCE FIX: Reduced implicit wait to prevent 73-second delays
+                # Use explicit waits (WebDriverWait) for specific elements instead
+                self.driver.implicitly_wait(1)  # Reduced from 10 seconds
                 self.driver.set_page_load_timeout(30)
                 
                 # Validate connection
@@ -126,69 +124,293 @@ class BrowserManager:
     
     def setup_posting_driver(self) -> webdriver.Chrome:
         """
-        Set up a second browser for posting comments
+        Set up a second browser for posting comments with retry logic
         
         Returns:
             Configured Chrome WebDriver instance for posting
         """
-        try:
-            # Clean up any existing driver first
-            if self.posting_driver:
-                try:
-                    self.posting_driver.quit()
-                except:
-                    pass
-                self.posting_driver = None
+        MAX_RETRIES = 3
+        RETRY_WAIT = 3
+        
+        for attempt in range(MAX_RETRIES):
+            try:
+                logger.info(f"Setting up posting driver (attempt {attempt + 1}/{MAX_RETRIES})...")
                 
-            # Clean up any existing temp directory
-            if self._temp_chrome_dir:
-                try:
-                    import shutil
-                    if os.path.exists(self._temp_chrome_dir):
-                        shutil.rmtree(self._temp_chrome_dir)
-                        logger.debug(f"Cleaned up temp directory: {self._temp_chrome_dir}")
-                except Exception as e:
-                    logger.debug(f"Failed to cleanup temp directory: {e}")
-                self._temp_chrome_dir = None
+                # Clean up any existing driver first
+                if self.posting_driver:
+                    try:
+                        self.posting_driver.quit()
+                    except:
+                        pass
+                    self.posting_driver = None
+                    
+                # Clean up any existing temp directory
+                if self._temp_chrome_dir:
+                    try:
+                        import shutil
+                        if os.path.exists(self._temp_chrome_dir):
+                            shutil.rmtree(self._temp_chrome_dir)
+                            logger.debug(f"Cleaned up temp directory: {self._temp_chrome_dir}")
+                    except Exception as e:
+                        logger.debug(f"Failed to cleanup temp directory: {e}")
+                    self._temp_chrome_dir = None
+                
+                logger.info("Setting up Chrome driver for posting...")
+                
+                # Set environment for Chrome stability
+                os.environ['CHROME_LOG_FILE'] = 'nul'
+                
+                chrome_options = Options()
+                chrome_options.add_argument("--no-sandbox")
+                chrome_options.add_argument("--disable-dev-shm-usage")
+                chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+                chrome_options.add_argument("--disable-notifications")
+                chrome_options.add_argument("--disable-popup-blocking")
+                chrome_options.add_argument("--start-minimized")
+                chrome_options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
+                chrome_options.add_experimental_option('useAutomationExtension', False)
+                chrome_options.add_argument("--log-level=3")
+                chrome_options.add_argument("--silent")
+                
+                # Use separate profile to avoid conflicts
+                import uuid
+                unique_id = str(uuid.uuid4())[:8]
+                user_data_dir = os.path.join(os.getcwd(), f"chrome_posting_temp_{unique_id}")
+                chrome_options.add_argument(f"--user-data-dir={user_data_dir}")
+                chrome_options.add_argument(f"--profile-directory=PostingProfile")
+                
+                # Use different remote debugging port to avoid conflicts
+                chrome_options.add_argument("--remote-debugging-port=9223")
+                
+                self._temp_chrome_dir = user_data_dir
+                
+                service = Service(ChromeDriverManager().install())
+                self.posting_driver = webdriver.Chrome(service=service, options=chrome_options)
+                
+                # Test the driver and copy session cookies for auto-login
+                self.posting_driver.get("https://www.facebook.com")
+                
+                # Test driver health
+                self.posting_driver.execute_script("return navigator.userAgent;")
+                logger.info(f"✅ Posting driver connected successfully (session: {self.posting_driver.session_id[:8]}...)")
+                
+                # Copy session cookies from main driver to enable auto-login (if main driver available)
+                logger.debug(f"🔍 Checking drivers for cookie copy - Main driver: {self.driver is not None}, Posting driver: {self.posting_driver is not None}")
+                
+                if self.driver:
+                    if self._copy_session_cookies():
+                        logger.info("✅ Background posting Chrome driver set up successfully with auto-login.")
+                    else:
+                        logger.warning("⚠️ Cookie copying failed - check debug logs above")
+                        logger.info("✅ Background posting Chrome driver set up successfully (manual login may be required).")
+                else:
+                    logger.info("ℹ️ Main driver not yet available - posting driver ready for manual login or later cookie sync")
+                    logger.info("✅ Background posting Chrome driver set up successfully (manual login may be required).")
+                    
+                return self.posting_driver
+                
+            except Exception as e:
+                logger.warning(f"Posting driver setup attempt {attempt + 1} failed: {e}")
+                
+                # Cleanup failed driver
+                if self.posting_driver:
+                    try:
+                        self.posting_driver.quit()
+                    except:
+                        pass
+                    self.posting_driver = None
+                
+                if attempt < MAX_RETRIES - 1:
+                    logger.info(f"Waiting {RETRY_WAIT} seconds before retry...")
+                    time.sleep(RETRY_WAIT * (attempt + 1))
+                else:
+                    logger.error(f"❌ Failed to setup posting driver after {MAX_RETRIES} attempts")
+                    return None
+        
+        return None
+    
+    def sync_posting_driver_session(self) -> bool:
+        """
+        Sync session cookies from main driver to posting driver after both are available
+        
+        Returns:
+            True if sync successful, False otherwise
+        """
+        if not self.driver or not self.posting_driver:
+            logger.warning("Cannot sync sessions: one or both drivers not available")
+            return False
             
-            logger.info("Setting up Chrome driver for posting...")
+        logger.info("🔄 Syncing session cookies to posting driver...")
+        success = self._copy_session_cookies()
+        
+        if success:
+            logger.info("🎉 Session sync successful - posting driver now logged in!")
+        else:
+            logger.warning("⚠️ Session sync failed - posting driver may require manual login")
             
-            # Set environment for Chrome stability
-            os.environ['CHROME_LOG_FILE'] = 'nul'
+        return success
+    
+    def _copy_session_cookies(self) -> bool:
+        """
+        Copy session cookies from main driver to posting driver for auto-login
+        
+        Returns:
+            True if cookies copied successfully, False otherwise
+        """
+        logger.debug("🚀 _copy_session_cookies() method started")
+        try:
+            if not self.driver or not self.posting_driver:
+                logger.warning("Cannot copy cookies: one or both drivers not available")
+                logger.debug(f"Driver states - Main: {self.driver is not None}, Posting: {self.posting_driver is not None}")
+                return False
             
-            chrome_options = Options()
-            chrome_options.add_argument("--no-sandbox")
-            chrome_options.add_argument("--disable-dev-shm-usage")
-            chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-            chrome_options.add_argument("--disable-notifications")
-            chrome_options.add_argument("--disable-popup-blocking")
-            chrome_options.add_argument("--start-minimized")
-            chrome_options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
-            chrome_options.add_experimental_option('useAutomationExtension', False)
-            chrome_options.add_argument("--log-level=3")
-            chrome_options.add_argument("--silent")
+            logger.info("🔄 Attempting to copy session cookies for auto-login...")
             
-            # Use a separate profile directory
-            import uuid
-            unique_id = str(uuid.uuid4())[:8]
-            user_data_dir = os.path.join(os.getcwd(), f"chrome_posting_temp_{unique_id}")
-            chrome_options.add_argument(f"--user-data-dir={user_data_dir}")
-            chrome_options.add_argument(f"--profile-directory=PostingProfile")
+            # Store current main driver URL to restore later
+            main_current_url = self.driver.current_url
             
-            self._temp_chrome_dir = user_data_dir
+            # Navigate main driver to Facebook base page to get all cookies
+            if not main_current_url.startswith("https://www.facebook.com"):
+                logger.debug("Main driver not on Facebook, navigating...")
+                self.driver.get("https://www.facebook.com")
+                time.sleep(3)
             
-            service = Service(ChromeDriverManager().install())
-            self.posting_driver = webdriver.Chrome(service=service, options=chrome_options)
+            # Get all cookies from main driver
+            main_cookies = self.driver.get_cookies()
+            logger.info(f"📋 Found {len(main_cookies)} cookies in main driver")
             
-            # Test the driver
+            if len(main_cookies) == 0:
+                logger.warning("⚠️ No cookies found in main driver - user may not be logged in")
+                return False
+            
+            # Navigate posting driver to Facebook base page before adding cookies
             self.posting_driver.get("https://www.facebook.com")
-            logger.info("✅ Background posting Chrome driver set up successfully.")
-            return self.posting_driver
+            time.sleep(2)
             
+            # Copy cookies to posting driver
+            copied_count = 0
+            failed_cookies = []
+            important_cookies = []
+            
+            for cookie in main_cookies:
+                try:
+                    cookie_name = cookie.get('name', 'unknown')
+                    
+                    # Track important Facebook session cookies
+                    if cookie_name in ['c_user', 'xs', 'datr', 'sb', 'fr', 'presence']:
+                        important_cookies.append(cookie_name)
+                    
+                    # Create a clean cookie dict
+                    clean_cookie = {
+                        'name': cookie_name,
+                        'value': cookie['value'],
+                        'domain': cookie.get('domain', '.facebook.com')
+                    }
+                    
+                    # Add optional fields if they exist and are valid
+                    if 'path' in cookie and cookie['path']:
+                        clean_cookie['path'] = cookie['path']
+                    if 'secure' in cookie:
+                        clean_cookie['secure'] = cookie['secure']
+                    if 'httpOnly' in cookie:
+                        clean_cookie['httpOnly'] = cookie['httpOnly']
+                    if 'expiry' in cookie and cookie['expiry'] is not None:
+                        clean_cookie['expiry'] = cookie['expiry']
+                    
+                    self.posting_driver.add_cookie(clean_cookie)
+                    copied_count += 1
+                    logger.debug(f"✅ Copied cookie: {cookie_name} (domain: {clean_cookie['domain']})")
+                    
+                except Exception as cookie_error:
+                    failed_cookies.append(cookie_name)
+                    logger.debug(f"❌ Failed to copy cookie {cookie_name}: {cookie_error}")
+            
+            logger.info(f"✅ Successfully copied {copied_count}/{len(main_cookies)} cookies")
+            logger.debug(f"🔑 Important session cookies found: {important_cookies}")
+            
+            if failed_cookies:
+                logger.warning(f"❌ Failed cookies: {', '.join(failed_cookies)}")
+                
+            # Check if critical session cookies were copied
+            if not any(cookie in important_cookies for cookie in ['c_user', 'xs']):
+                logger.warning("⚠️ Critical session cookies (c_user, xs) may be missing!")
+            
+            # Refresh the posting driver to apply cookies
+            logger.debug("🔄 Refreshing posting driver to apply cookies...")
+            self.posting_driver.refresh()
+            time.sleep(3)
+            
+            # Check if login was successful with multiple methods
+            page_source = self.posting_driver.page_source.lower()
+            current_url = self.posting_driver.current_url.lower()
+            
+            # Debug: Log key information for troubleshooting
+            logger.debug(f"🔍 Login verification - Current URL: {current_url}")
+            logger.debug(f"🔍 Page source length: {len(page_source)} characters")
+            
+            # Check for specific key indicators with detailed logging
+            login_checks = {
+                "home_in_source": "home" in page_source,
+                "newsfeed_in_source": "newsfeed" in page_source,
+                "timeline_in_source": "timeline" in page_source,
+                "profile_in_source": "profile" in page_source,
+                "navigation_menu": "navigation" in page_source and "menu" in page_source,
+                "home_in_url": "/home" in current_url,
+                "no_login_form": not ("login" in page_source and "password" in page_source and "email" in page_source)
+            }
+            
+            # Log each check result
+            for check_name, result in login_checks.items():
+                logger.debug(f"🔍 {check_name}: {result}")
+            
+            # Check for Facebook-specific logged-in elements
+            fb_logged_in_indicators = [
+                'data-testid="feed_story"' in page_source,
+                'role="main"' in page_source and 'feed' in page_source,
+                'composer' in page_source,
+                'notifications' in page_source and 'messages' in page_source,
+                current_url.startswith('https://www.facebook.com') and 'login' not in current_url
+            ]
+            
+            logger.debug(f"🔍 Facebook-specific checks: {fb_logged_in_indicators}")
+            
+            # Multiple login verification checks
+            login_indicators = list(login_checks.values()) + fb_logged_in_indicators
+            is_logged_in = any(login_indicators)
+            
+            # Additional check: look for specific login failure indicators
+            login_failure_signs = [
+                "log in to facebook" in page_source,
+                "enter your email" in page_source,
+                "enter your password" in page_source,
+                'input[name="email"]' in page_source,
+                'input[name="pass"]' in page_source,
+                "/login" in current_url
+            ]
+            
+            has_login_failure = any(login_failure_signs)
+            logger.debug(f"🔍 Login failure indicators: {login_failure_signs} -> {has_login_failure}")
+            
+            # Final determination
+            if is_logged_in and not has_login_failure:
+                logger.info("🎉 Auto-login successful - posting driver logged in!")
+                success = True
+            else:
+                logger.warning("⚠️ Cookie copy completed but login verification failed")
+                logger.debug(f"🔍 Login indicators passed: {sum(login_indicators)}/{len(login_indicators)}")
+                logger.debug(f"🔍 Login failure detected: {has_login_failure}")
+                success = False
+            
+            # Restore main driver to original URL if changed
+            if main_current_url != self.driver.current_url:
+                logger.debug("Restoring main driver to original URL...")
+                self.driver.get(main_current_url)
+            
+            return success
+                
         except Exception as e:
-            logger.error(f"❌ Failed to setup background posting Chrome Driver: {e}")
-            self.posting_driver = None
-            return None
+            logger.error(f"❌ Failed to copy session cookies: {e}")
+            return False
     
     def login_to_facebook(self, username: str, password: str) -> bool:
         """

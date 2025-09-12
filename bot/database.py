@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import List, Optional, Dict, Any
 from contextlib import contextmanager
 import json
+from modules.url_normalizer import normalize_url
 
 logger = logging.getLogger(__name__)
 
@@ -210,6 +211,17 @@ class BotDatabase:
                 else:
                     logger.debug(f"Migration note: {e}")
             
+            # Add post_author_url column if it doesn't exist (migration)
+            try:
+                cursor.execute("ALTER TABLE comment_queue ADD COLUMN post_author_url TEXT")
+                logger.info("Added post_author_url column to comment_queue table")
+            except Exception as e:
+                # Column probably already exists
+                if "duplicate column name" in str(e).lower():
+                    logger.debug("post_author_url column already exists in comment_queue table")
+                else:
+                    logger.debug(f"Migration note: {e}")
+            
             # Bot statistics and sessions tables
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS bot_stats (
@@ -278,6 +290,28 @@ class BotDatabase:
                 'name': 'Generic',
                 'category': 'GENERIC',
                 'body': "Hi! We're Bravo Creations — full-service B2B for jewelers: CAD, casting, stone setting, engraving, enamel, finishing. Fast turnaround, meticulous QC. {{phone}} • {{register_url}} — ask for {{ask_for}}.",
+                'is_default': True
+            },
+            # DM Templates for Smart Launcher
+            {
+                'id': str(uuid.uuid4()),
+                'name': 'DM Service',
+                'category': 'DM_SERVICE',
+                'body': "Hi {{author_name}}! Saw your jewelry work - impressive craftsmanship! We're Bravo Creations, full-service B2B manufacturing specializing in CAD, casting, and setting. Would love to chat about partnership opportunities. {{register_url}} • {{phone}} — ask for {{ask_for}}",
+                'is_default': True
+            },
+            {
+                'id': str(uuid.uuid4()),
+                'name': 'DM ISO Pivot',
+                'category': 'DM_ISO',
+                'body': "Hi {{author_name}}! Great style in your post! We don't stock pieces, but this is exactly what we manufacture daily with CAD + casting + setting. Quick turnaround, quality focus. {{register_url}} • {{phone}} — ask for {{ask_for}}",
+                'is_default': True
+            },
+            {
+                'id': str(uuid.uuid4()),
+                'name': 'DM General',
+                'category': 'DM_GENERAL',
+                'body': "Hi {{author_name}}! Noticed your jewelry post - beautiful work! We're Bravo Creations, full-service B2B manufacturing (CAD, casting, setting, engraving). Always looking to connect with quality jewelers. {{register_url}} • {{phone}} — ask for {{ask_for}}",
                 'is_default': True
             },
             {
@@ -361,15 +395,7 @@ class BotDatabase:
     
     def is_post_processed(self, post_url: str) -> bool:
         """Check if a post has already been processed. Always use normalized URL."""
-        # For photo URLs, preserve fbid and set parameters but remove tracking
-        if '/photo/' in post_url and 'fbid=' in post_url:
-            import re
-            # Remove tracking parameters but keep fbid and set
-            norm_url = re.sub(r'&(__cft__|__tn__|notif_id|notif_t|ref)=[^&]*', '', post_url)
-            norm_url = re.sub(r'&context=[^&]*', '', norm_url)
-        else:
-            # For non-photo URLs, remove all query parameters
-            norm_url = post_url.split('?')[0].split('#')[0] if post_url else post_url
+        norm_url = normalize_url(post_url)
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT id FROM processed_posts WHERE post_url = ?", (norm_url,))
@@ -378,7 +404,9 @@ class BotDatabase:
     def mark_post_processed(self, post_url: str, post_text: str = "", post_type: str = "", 
                            comment_generated: bool = False, comment_text: str = "", 
                            error_message: str = "") -> bool:
-        """Mark a post as processed"""
+        """Mark a post as processed. Use centralized URL normalization."""
+        norm_url = normalize_url(post_url)
+            
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
@@ -386,9 +414,9 @@ class BotDatabase:
                     INSERT OR REPLACE INTO processed_posts 
                     (post_url, post_text, post_type, comment_generated, comment_text, error_message)
                     VALUES (?, ?, ?, ?, ?, ?)
-                """, (post_url, post_text, post_type, comment_generated, comment_text, error_message))
+                """, (norm_url, post_text, post_type, comment_generated, comment_text, error_message))
                 conn.commit()
-                logger.info(f"Marked post as processed: {post_url}")
+                logger.info(f"Marked post as processed: {norm_url}")
                 return True
         except Exception as e:
             logger.error(f"Failed to mark post as processed: {e}")
@@ -397,33 +425,41 @@ class BotDatabase:
     def add_to_comment_queue(self, post_url: str, post_text: str, comment_text: str, 
                             post_type: str, post_screenshot: str = None, post_images: str = None,
                             post_author: str = None, post_engagement: str = None,
-                            image_pack_id: str = None, detected_categories: List[str] = None) -> Optional[int]:
+                            image_pack_id: str = None, detected_categories: List[str] = None,
+                            post_author_url: str = None) -> Optional[int]:
         """Add a comment to the approval queue with enhanced post data"""
         try:
+            # DEBUGGING: Log post_author_url input
+            logger.debug(f"DB_STORAGE: Received post_author_url: '{post_author_url}' (length: {len(post_author_url) if post_author_url else 0})")
+            
             # Convert categories to JSON string
             categories_json = json.dumps(detected_categories or [])
             
-            # For photo URLs, preserve parameters; for others, normalize
-            if '/photo/' in post_url and 'fbid=' in post_url:
-                # Photo URLs need their parameters to work properly
-                norm_url = post_url
-                logger.info(f"Preserving photo URL with parameters: {norm_url}")
-            else:
-                # Normalize URL by removing query parameters and fragments
-                norm_url = post_url.split('?')[0].split('#')[0] if post_url else post_url
-                logger.info(f"Normalized non-photo URL: {norm_url}")
+            # Use centralized URL normalization
+            norm_url = normalize_url(post_url)
+            logger.info(f"Normalized URL for queue: {norm_url}")
+            
+            # DEBUGGING: Log what we're about to store
+            logger.debug(f"DB_STORAGE: About to store post_author_url: '{post_author_url}'")
+            
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
                     INSERT INTO comment_queue (post_url, post_text, comment_text, post_type, 
                                             post_screenshot, post_images, post_author, post_engagement, 
-                                            image_pack_id, detected_categories)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                            image_pack_id, detected_categories, post_author_url)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (norm_url, post_text, comment_text, post_type, post_screenshot, 
-                     post_images, post_author, post_engagement, image_pack_id, categories_json))
+                     post_images, post_author, post_engagement, image_pack_id, categories_json, post_author_url))
                 conn.commit()
                 queue_id = cursor.lastrowid
                 logger.info(f"Added comment to queue (ID: {queue_id}): {norm_url}")
+                
+                # DEBUGGING: Verify what was actually stored
+                cursor.execute("SELECT post_author_url FROM comment_queue WHERE id = ?", (queue_id,))
+                stored_url = cursor.fetchone()[0]
+                logger.debug(f"DB_STORAGE: Verified stored post_author_url: '{stored_url}' (length: {len(stored_url) if stored_url else 0})")
+                
                 return queue_id
         except Exception as e:
             logger.error(f"Failed to add comment to queue: {e}")
@@ -675,7 +711,7 @@ class BotDatabase:
         template_id = str(uuid.uuid4())
         
         # Validate category
-        valid_categories = ['GENERIC', 'ISO_PIVOT', 'CAD', 'CASTING', 'SETTING', 'ENGRAVING', 'ENAMEL']
+        valid_categories = ['GENERIC', 'ISO_PIVOT', 'CAD', 'CASTING', 'SETTING', 'ENGRAVING', 'ENAMEL', 'DM_SERVICE', 'DM_ISO', 'DM_GENERAL']
         if category not in valid_categories:
             raise ValueError(f"Invalid category. Must be one of: {', '.join(valid_categories)}")
         
@@ -729,7 +765,7 @@ class BotDatabase:
                 params.append(name)
             
             if category is not None:
-                valid_categories = ['GENERIC', 'ISO_PIVOT', 'CAD', 'CASTING', 'SETTING', 'ENGRAVING', 'ENAMEL']
+                valid_categories = ['GENERIC', 'ISO_PIVOT', 'CAD', 'CASTING', 'SETTING', 'ENGRAVING', 'ENAMEL', 'DM_SERVICE', 'DM_ISO', 'DM_GENERAL']
                 if category not in valid_categories:
                     raise ValueError(f"Invalid category. Must be one of: {', '.join(valid_categories)}")
                 updates.append("category = ?")

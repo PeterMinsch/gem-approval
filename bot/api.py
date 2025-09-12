@@ -13,6 +13,8 @@ from datetime import datetime
 import os
 import json
 import uuid
+from modules.url_normalizer import normalize_url
+import io
 from io import BytesIO
 from selenium.webdriver.common.by import By
 
@@ -20,6 +22,9 @@ from facebook_comment_bot import FacebookAICommentBot
 from bravo_config import CONFIG
 from database import db
 from performance_timer import log_performance_summary
+from modules.message_generator import MessageGenerator
+from browser_manager import MessengerBrowserManager
+from messenger_automation import MessengerAutomation
 
 # Configure logging
 def setup_api_logger():
@@ -128,8 +133,6 @@ from image_pack_api import router as image_pack_router
 app.include_router(image_pack_router, prefix="/api")
 
 # Global bot instance and status
-
-# Global bot instance and status
 bot_instance = None
 bot_status = {
     "is_running": False,
@@ -140,6 +143,9 @@ bot_status = {
     "comments_queued": 0,
     "current_status": "idle"
 }
+
+# Global messenger browser manager
+messenger_browser_manager = MessengerBrowserManager()
 
 
 # Remove automatic bot/background browser startup. Only start on /bot/start endpoint.
@@ -193,6 +199,7 @@ class QueuedComment(BaseModel):
     post_screenshot: Optional[str] = None
     post_images: Optional[str] = None
     post_author: Optional[str] = None
+    post_author_url: Optional[str] = None
     post_engagement: Optional[str] = None
     status: str  # "pending", "approved", "rejected", "posted"
     created_at: str
@@ -298,6 +305,18 @@ class TemplateResponse(BaseModel):
 class TemplateDeleteResponse(BaseModel):
     success: bool
     message: str
+
+# Messenger Automation Models
+class MessengerRequest(BaseModel):
+    session_id: str
+    recipient: str
+    message: str
+    images: Optional[List[str]] = None
+
+class MessengerResponse(BaseModel):
+    status: str
+    duration: Optional[str] = None
+    error: Optional[str] = None
 
 # Pending approvals queue for when bot is initializing
 pending_approvals = []
@@ -428,14 +447,17 @@ def post_comment_realtime(comment_id: str, post_url: str, comment_text: str, ima
 def add_comment_to_queue(post_url: str, post_text: str, generated_comment: str, post_type: str,
                         post_screenshot: str = None, post_images: str = None,
                         post_author: str = None, post_engagement: str = None,
-                        detected_categories: List[str] = None) -> str:
+                        detected_categories: List[str] = None, post_author_url: str = None) -> str:
     """Add a generated comment to the approval queue using database with enhanced post data"""
     logger.info(f"🔄 Adding to comment queue: {post_type} - {post_url[:50]}...")
     logger.info(f"📝 Comment text: {generated_comment[:100] if generated_comment else 'None'}...")
     
+    # DEBUGGING: Log post_author_url at API layer
+    logger.debug(f"API_LAYER: Received post_author_url: '{post_author_url}' (length: {len(post_author_url) if post_author_url else 0})")
+    
     queue_id = db.add_to_comment_queue(post_url, post_text, generated_comment, post_type,
                                      post_screenshot, post_images, post_author, post_engagement,
-                                     detected_categories=detected_categories)
+                                     detected_categories=detected_categories, post_author_url=post_author_url)
     
     if queue_id:
         bot_status["comments_queued"] += 1
@@ -459,6 +481,7 @@ def get_pending_comments() -> List[QueuedComment]:
             post_screenshot=db_comment.get('post_screenshot'),
             post_images=db_comment.get('post_images'),
             post_author=db_comment.get('post_author'),
+            post_author_url=db_comment.get('post_author_url'),
             post_engagement=db_comment.get('post_engagement'),
             status=db_comment['status'],
             created_at=db_comment['queued_at'],
@@ -481,6 +504,11 @@ def get_comment_by_id(comment_id: str) -> Optional[QueuedComment]:
                 post_text=db_comment['post_text'],
                 generated_comment=db_comment['comment_text'],
                 post_type=db_comment['post_type'],
+                post_screenshot=db_comment.get('post_screenshot'),
+                post_images=db_comment.get('post_images'),
+                post_author=db_comment.get('post_author'),
+                post_author_url=db_comment.get('post_author_url'),
+                post_engagement=db_comment.get('post_engagement'),
                 status=db_comment['status'],
                 created_at=db_comment['queued_at'],
                 approved_at=db_comment['approved_at'],
@@ -637,13 +665,18 @@ def run_bot_with_queuing(bot_instance: FacebookAICommentBot, max_scrolls: int = 
                     logger.info(f"⏭️ Post filtered out: {classification.post_type}")
                     return
                 
-                # Extract post author for personalization
-                logger.info(f"👤 Extracting post author for personalization...")
+                # Extract post author for personalization with profile URL
+                logger.info(f"👤 Extracting post author and profile URL for personalization...")
                 post_author_name = ""
+                post_author_profile_url = ""
                 try:
-                    if bot_instance and bot_instance.driver:
+                    if bot_instance and bot_instance.driver and hasattr(bot_instance.post_extractor, 'get_post_author_with_profile'):
+                        post_author_name, post_author_profile_url = bot_instance.post_extractor.get_post_author_with_profile()
+                        logger.info(f"✅ Extracted post author: '{post_author_name}' with profile URL: '{post_author_profile_url[:50] if post_author_profile_url else 'None'}'")
+                    elif bot_instance and bot_instance.driver:
+                        # Fallback to old method if enhanced method not available
                         post_author_name = bot_instance.get_post_author()
-                        logger.info(f"✅ Extracted post author: '{post_author_name}'")
+                        logger.info(f"✅ Extracted post author (fallback): '{post_author_name}'")
                     else:
                         logger.warning("⚠️ No bot instance/driver available for author extraction")
                 except Exception as e:
@@ -662,6 +695,7 @@ def run_bot_with_queuing(bot_instance: FacebookAICommentBot, max_scrolls: int = 
                     post_screenshot = None
                     post_images = None
                     post_author = post_author_name  # Use the extracted author name for personalization
+                    post_author_url = post_author_profile_url  # Use the extracted profile URL for Messenger links
                     post_engagement = None
                     
                     try:
@@ -704,21 +738,70 @@ def run_bot_with_queuing(bot_instance: FacebookAICommentBot, max_scrolls: int = 
                             
                             # Try to capture screenshot and metadata (optional, don't fail if article not found)
                             try:
-                                post_element = bot_instance.driver.find_element(By.XPATH, "//div[@role='article']")
+                                # Try to find the main post container (not comments)
+                                # Look for article that contains the post text we found
+                                post_xpath = "//div[@role='article'][1]"  # First article is usually the main post
+                                post_element = bot_instance.driver.find_element(By.XPATH, post_xpath)
+                                
                                 if post_element:
+                                    # Try to exclude comments section if possible
+                                    try:
+                                        # Find the post content area (before comments)
+                                        content_script = """
+                                        var article = arguments[0];
+                                        // Find where comments start (usually after post content)
+                                        var commentSection = article.querySelector('[aria-label*="Comment"], [role="complementary"]');
+                                        if (commentSection) {
+                                            // Hide comments temporarily for screenshot
+                                            commentSection.style.display = 'none';
+                                        }
+                                        return true;
+                                        """
+                                        bot_instance.driver.execute_script(content_script, post_element)
+                                    except:
+                                        pass  # If we can't hide comments, still take screenshot
+                                    
                                     post_screenshot = post_element.screenshot_as_png
                                     import base64
                                     post_screenshot = f"data:image/png;base64,{base64.b64encode(post_screenshot).decode('utf-8')}"
                                     
-                                    # Try to extract post author using the improved method
+                                    # Restore comments if hidden
                                     try:
-                                        # Use the bot's improved get_post_author method
-                                        extracted_author = bot_instance.get_post_author()
-                                        if extracted_author:
-                                            post_author = extracted_author
-                                            logger.info(f"✅ Extracted post author: '{post_author}'")
+                                        restore_script = """
+                                        var article = arguments[0];
+                                        var commentSection = article.querySelector('[aria-label*="Comment"], [role="complementary"]');
+                                        if (commentSection) {
+                                            commentSection.style.display = '';
+                                        }
+                                        """
+                                        bot_instance.driver.execute_script(restore_script, post_element)
+                                    except:
+                                        pass
+                                    
+                                    # Try to extract post author and profile URL using the enhanced method
+                                    try:
+                                        # Use the enhanced get_post_author_with_profile method if available
+                                        if hasattr(bot_instance.post_extractor, 'get_post_author_with_profile'):
+                                            extracted_author, extracted_author_url = bot_instance.post_extractor.get_post_author_with_profile()
+                                            
+                                            # DEBUGGING: Log the extraction results
+                                            logger.debug(f"BOT_EXTRACTION: Extracted author: '{extracted_author}'")
+                                            logger.debug(f"BOT_EXTRACTION: Extracted URL: '{extracted_author_url}' (length: {len(extracted_author_url) if extracted_author_url else 0})")
+                                            
+                                            if extracted_author:
+                                                post_author = extracted_author
+                                                post_author_url = extracted_author_url
+                                                logger.info(f"✅ Extracted post author: '{post_author}' with profile URL: '{post_author_url[:50] if post_author_url else 'None'}'")
+                                            else:
+                                                logger.warning("⚠️ Could not extract post author")
                                         else:
-                                            logger.warning("⚠️ Could not extract post author")
+                                            # Fallback to old method
+                                            extracted_author = bot_instance.get_post_author()
+                                            if extracted_author:
+                                                post_author = extracted_author
+                                                logger.info(f"✅ Extracted post author (fallback): '{post_author}'")
+                                            else:
+                                                logger.warning("⚠️ Could not extract post author")
                                     except Exception as e:
                                         logger.debug(f"Author extraction failed: {e}")
                                         
@@ -751,7 +834,8 @@ def run_bot_with_queuing(bot_instance: FacebookAICommentBot, max_scrolls: int = 
                         logger.info(f"📊 Queue data - Type: {classification.post_type}, Author: {post_author}, Images: {len(post_images) if post_images else 0}")
                         # Add comment directly to the approval queue using the database
                         queue_id = add_comment_to_queue(clean_url, post_text, comment, classification.post_type,
-                                                      post_screenshot, post_images, post_author, post_engagement)
+                                                      post_screenshot, post_images, post_author, post_engagement,
+                                                      post_author_url=post_author_profile_url)
                         logger.info(f"🔄 add_comment_to_queue returned: {queue_id}")
                         
                         if queue_id:
@@ -765,7 +849,8 @@ def run_bot_with_queuing(bot_instance: FacebookAICommentBot, max_scrolls: int = 
                         # Try one more time with minimal data
                         try:
                             logger.info(f"🔄 Retrying with minimal data...")
-                            add_comment_to_queue(post_url, post_text, comment, classification.post_type)
+                            add_comment_to_queue(post_url, post_text, comment, classification.post_type, 
+                                               post_author_url=post_author_profile_url)
                             logger.info(f"Fallback: Comment queued with minimal data: {classification.post_type}")
                         except Exception as e2:
                             logger.error(f"❌ Complete failure queuing comment: {e2}")
@@ -800,10 +885,10 @@ def run_bot_with_queuing(bot_instance: FacebookAICommentBot, max_scrolls: int = 
             if is_specific_post:
                 # Process the specific post directly
                 logger.info("Processing specific post directly...")
-                time.sleep(8)  # Wait for page to load
+                time.sleep(2)  # Reduced wait for page to load
                 
-                # Clean the URL
-                clean_url = target_url.split('?')[0] if '?' in target_url else target_url
+                # Use centralized URL normalization
+                clean_url = normalize_url(target_url)
                 
                 try:
                     # Extract post text
@@ -831,6 +916,21 @@ def run_bot_with_queuing(bot_instance: FacebookAICommentBot, max_scrolls: int = 
                         # Actually scan for new posts using the bot's real methods
                         logger.info("Scanning for new posts...")
                         
+                        # DEBUGGING: Check current page before scanning
+                        current_url = bot_instance.driver.current_url if bot_instance.driver else "unknown"
+                        logger.debug(f"SCAN_DEBUG: Current URL before scanning: {current_url[:100]}...")
+                        
+                        # DEBUGGING: Ensure we're on the group feed, not individual posts
+                        group_url = CONFIG.get('POST_URL', 'https://www.facebook.com')
+                        if '/groups/' in group_url and 'fbid=' not in current_url and '/posts/' not in current_url:
+                            # We're still on the group feed, good to scan
+                            logger.debug(f"SCAN_DEBUG: On group feed, proceeding with scan")
+                        elif '/groups/' in group_url:
+                            # We might be on an individual post, navigate back to group feed
+                            logger.info(f"SCAN_DEBUG: Navigating back to group feed: {group_url}")
+                            bot_instance.driver.get(group_url)
+                            time.sleep(2)  # Wait for page load
+                        
                         # Use the bot's actual post scanning method
                         post_links = bot_instance.scroll_and_collect_post_links(max_scrolls=5)
                         logger.info(f"Found {len(post_links)} potential posts to scan")
@@ -840,15 +940,8 @@ def run_bot_with_queuing(bot_instance: FacebookAICommentBot, max_scrolls: int = 
                             if not bot_status["is_running"]:
                                 break
                             
-                            # For photo URLs, preserve fbid and set parameters
-                            if '/photo/' in post_url and 'fbid=' in post_url:
-                                # Keep photo URLs mostly intact, remove only tracking parameters
-                                import re
-                                clean_url = re.sub(r'&(__cft__|__tn__|notif_id|notif_t|ref)=[^&]*', '', post_url)
-                                clean_url = re.sub(r'&context=[^&]*', '', clean_url)
-                            else:
-                                # For non-photo URLs, remove all query parameters  
-                                clean_url = post_url.split('?')[0] if '?' in post_url else post_url
+                            # Use centralized URL normalization
+                            clean_url = normalize_url(post_url)
                             
                             if db.is_post_processed(clean_url):
                                 logger.info(f"Skipping already processed post: {clean_url}")
@@ -885,11 +978,6 @@ def run_bot_with_queuing(bot_instance: FacebookAICommentBot, max_scrolls: int = 
                                     bot_instance.save_processed_post(clean_url, post_text=post_text, post_type="already_commented")
                                     continue
                                 
-                                # Check for duplicates
-                                if bot_instance.is_duplicate_post(post_text, clean_url):
-                                    logger.info(f"Duplicate post detected: {clean_url}")
-                                    bot_instance.save_processed_post(clean_url, post_text=post_text, post_type="duplicate")
-                                    continue
                                 
                                 # Ingest post into CRM
                                 ingest_post_to_crm(clean_url, post_text)
@@ -903,8 +991,8 @@ def run_bot_with_queuing(bot_instance: FacebookAICommentBot, max_scrolls: int = 
                                 continue
                         
                         # Wait before next scan (reduced for testing)
-                        logger.info("Scan cycle complete. Starting next scan in 30 seconds...")
-                        time.sleep(30)
+                        logger.info("Scan cycle complete. Starting next scan in 5 seconds...")
+                        time.sleep(5)  # Reduced from 30s for testing
                         
                     except Exception as e:
                         logger.error(f"Error during scanning: {e}")
@@ -923,7 +1011,7 @@ def run_bot_with_queuing(bot_instance: FacebookAICommentBot, max_scrolls: int = 
                             except Exception as reconnect_error:
                                 logger.error(f"Failed to reconnect browser: {reconnect_error}")
                         
-                        time.sleep(60)  # Wait a minute before retrying
+                        time.sleep(10)  # Reduced from 60s - wait before retrying
                     
         except Exception as e:
             logger.error(f"Error setting up Chrome or navigating: {e}")
@@ -1092,6 +1180,131 @@ async def get_comment_templates():
             "error": str(e),
             "templates": {}
         }
+
+@app.post("/generate-message/{comment_id}")
+async def generate_dm_message(comment_id: str):
+    """Generate personalized DM message for a specific comment"""
+    try:
+        # Get comment data from database
+        try:
+            # Convert string ID back to integer for database lookup
+            comment_id_int = int(comment_id)
+            db_comment = db.get_comment_by_id(comment_id_int)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid comment ID format")
+        if not db_comment:
+            raise HTTPException(status_code=404, detail="Comment not found")
+        
+        logger.info(f"🎯 Generating DM message for comment {comment_id} (author: {db_comment.get('post_author')})")
+        
+        # Initialize message generator
+        generator = MessageGenerator(CONFIG)
+        
+        # Generate the message
+        start_time = time.time()
+        result = await generator.generate_dm_message(db_comment)
+        generation_time = time.time() - start_time
+        
+        # 🚀 Use stored images and screenshot for fast Smart Launcher response
+        post_images = []
+        post_screenshot = None
+        
+        # Parse stored images from database
+        if db_comment.get('post_images'):
+            try:
+                stored_images = db_comment['post_images']
+                if isinstance(stored_images, str) and stored_images.startswith('['):
+                    # JSON array of image URLs/data
+                    post_images = json.loads(stored_images)
+                elif isinstance(stored_images, str):
+                    # Single image URL/data as string
+                    post_images = [stored_images] if stored_images else []
+                logger.info(f"📷 Using stored images: {len(post_images)} image(s)")
+            except json.JSONDecodeError as e:
+                logger.warning(f"Failed to parse stored images: {e}")
+                post_images = []
+        
+        # Get stored screenshot
+        post_screenshot = db_comment.get('post_screenshot')
+        if post_screenshot:
+            logger.info(f"📸 Using stored screenshot ({len(post_screenshot)} chars)")
+        else:
+            logger.info("📸 No stored screenshot available")
+        
+        # Create Messenger URL from author profile URL
+        messenger_url = None
+        if db_comment.get('post_author_url'):
+            try:
+                from modules.post_extractor import PostExtractor
+                facebook_id = PostExtractor.extract_facebook_id_from_profile_url(db_comment['post_author_url'])
+                if facebook_id:
+                    messenger_url = f"https://www.facebook.com/messages/t/{facebook_id}"
+                    logger.debug(f"✅ Created Messenger URL: {messenger_url}")
+            except Exception as e:
+                logger.warning(f"Failed to create Messenger URL: {e}")
+        
+        # post_images and post_screenshot are already set above from fresh capture
+        
+        # Enhanced response with metadata and images
+        response = {
+            'success': True,
+            'message': result['message'],
+            'author_name': result['author_name'],
+            'generation_method': result['generation_method'],
+            'character_count': result['character_count'],
+            'generation_time_seconds': round(generation_time, 2),
+            'post_type': result['post_type'],
+            'messenger_url': messenger_url,
+            'post_images': post_images,
+            'post_screenshot': post_screenshot,
+            'has_images': len(post_images) > 0 or bool(post_screenshot)
+        }
+        
+        logger.info(f"✅ Generated {result['character_count']}-char message using {result['generation_method']} in {generation_time:.2f}s")
+        return response
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to generate message for comment {comment_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Message generation failed: {str(e)}")
+
+@app.get("/proxy-image")
+async def proxy_image(url: str):
+    """Proxy endpoint to fetch images and bypass CORS restrictions"""
+    try:
+        import httpx
+        
+        logger.info(f"🖼️ Proxying image request for: {url[:100]}...")
+        
+        # Validate URL is an image URL
+        if not url.startswith(('http://', 'https://')):
+            raise HTTPException(status_code=400, detail="Invalid URL")
+        
+        # Fetch the image
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, timeout=10.0, follow_redirects=True)
+            
+            if response.status_code != 200:
+                raise HTTPException(status_code=response.status_code, detail="Failed to fetch image")
+            
+            # Determine content type
+            content_type = response.headers.get('content-type', 'image/jpeg')
+            
+            # Return the image with appropriate headers
+            return StreamingResponse(
+                io.BytesIO(response.content),
+                media_type=content_type,
+                headers={
+                    'Cache-Control': 'public, max-age=3600',  # Cache for 1 hour
+                    'Access-Control-Allow-Origin': '*'  # Allow CORS
+                }
+            )
+            
+    except httpx.TimeoutException:
+        logger.error(f"❌ Timeout fetching image: {url[:100]}")
+        raise HTTPException(status_code=504, detail="Image fetch timeout")
+    except Exception as e:
+        logger.error(f"❌ Failed to proxy image: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to proxy image: {str(e)}")
 
 @app.post("/comments/approve", response_model=CommentApprovalResponse)
 async def approve_comment_endpoint(request: CommentApprovalRequest):
@@ -2031,7 +2244,8 @@ async def send_comment(request: Dict[str, Any]):
             post_type="COMPOSED",
             post_images=json.dumps(images) if images else None,
             post_author="User",
-            detected_categories=None  # Categories are already analyzed in real-time
+            detected_categories=None,  # Categories are already analyzed in real-time
+            post_author_url=None  # No Facebook profile URL for user-composed comments
         )
         
         if queue_id:
@@ -2052,6 +2266,112 @@ async def send_comment(request: Dict[str, Any]):
     except Exception as e:
         logger.error(f"❌ Error sending comment: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to send comment: {str(e)}")
+
+# Utility endpoint to convert base64 images to temporary files
+@app.post("/convert-base64-images")
+async def convert_base64_images(request: dict):
+    """Convert base64 image data to temporary files for selenium automation"""
+    try:
+        base64_images = request.get('base64_images', [])
+        if not base64_images:
+            return {"success": True, "file_paths": []}
+        
+        logger.info(f"🔄 Converting {len(base64_images)} base64 images to temporary files")
+        
+        # Import ImageHandler for conversion
+        from modules.image_handler import ImageHandler
+        
+        # Create a dummy handler instance (we only need the static conversion methods)
+        handler = ImageHandler(None, {})
+        
+        # Convert all base64 images to temporary files
+        file_paths = handler.convert_post_images_to_files(base64_images)
+        
+        logger.info(f"✅ Converted {len(file_paths)}/{len(base64_images)} images to temporary files")
+        
+        return {
+            "success": True,
+            "file_paths": file_paths,
+            "converted_count": len(file_paths),
+            "total_count": len(base64_images)
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to convert base64 images: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "file_paths": []
+        }
+
+# Messenger Automation Endpoints
+
+@app.post("/messenger/send-message", response_model=MessengerResponse)
+async def send_messenger_message(request: MessengerRequest):
+    """Send message via Messenger automation"""
+    try:
+        logger.info(f"🚀 Messenger automation request - Session: {request.session_id}, Recipient: {request.recipient}")
+        
+        # Get browser for this session
+        browser = messenger_browser_manager.get_messenger_browser(request.session_id)
+        
+        # Get main browser for session copying
+        main_browser = None
+        try:
+            if bot_instance and hasattr(bot_instance, 'posting_driver') and bot_instance.posting_driver:
+                main_browser = bot_instance.posting_driver
+                logger.info("Found main posting browser for session copying")
+            elif bot_instance and hasattr(bot_instance, 'driver') and bot_instance.driver:
+                main_browser = bot_instance.driver
+                logger.info("Found main driver for session copying")
+            else:
+                logger.warning("No main browser found - will use credential login")
+        except Exception as e:
+            logger.warning(f"Could not access main browser: {e}")
+        
+        # Create automation instance with source browser for session copying
+        messenger = MessengerAutomation(browser, source_browser=main_browser)
+        
+        # Send message with images
+        result = await messenger.send_message_with_images(
+            recipient=request.recipient,
+            message=request.message,
+            image_paths=request.images
+        )
+        
+        logger.info(f"✅ Messenger automation result: {result}")
+        return MessengerResponse(**result)
+        
+    except Exception as e:
+        logger.error(f"❌ Messenger automation failed: {e}")
+        return MessengerResponse(status="error", error=str(e))
+
+@app.get("/messenger/sessions")
+async def get_messenger_sessions():
+    """Get active messenger browser sessions"""
+    try:
+        sessions = list(messenger_browser_manager.messenger_browsers.keys())
+        return {"active_sessions": sessions, "count": len(sessions)}
+    except Exception as e:
+        logger.error(f"Error getting messenger sessions: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get sessions: {str(e)}")
+
+@app.delete("/messenger/session/{session_id}")
+async def cleanup_messenger_session(session_id: str):
+    """Cleanup specific messenger session"""
+    try:
+        messenger_browser_manager._cleanup_browser(session_id)
+        logger.info(f"✅ Cleaned up messenger session: {session_id}")
+        return {"status": "cleaned", "session_id": session_id}
+    except Exception as e:
+        logger.error(f"Error cleaning up session {session_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to cleanup session: {str(e)}")
+
+# Cleanup messenger browsers on app shutdown
+@app.on_event("shutdown")
+async def cleanup_browsers():
+    messenger_browser_manager.cleanup_all()
+    logger.info("🧹 All messenger browsers cleaned up on shutdown")
 
 @app.on_event("startup")
 async def startup_event():
@@ -2087,6 +2407,18 @@ async def startup_event():
     except Exception as e:
         logger.error(f"❌ Error during startup migration: {e}")
         # Don't fail startup for migration errors - system should still work
+    
+    # Start persistent messenger browser
+    try:
+        logger.info("🚀 Starting persistent messenger browser...")
+        success = messenger_browser_manager.start_persistent_browser()
+        if success:
+            logger.info("✅ Persistent messenger browser started successfully")
+        else:
+            logger.warning("⚠️ Failed to start persistent messenger browser - messenger automation will not work")
+    except Exception as e:
+        logger.error(f"❌ Error starting persistent browser: {e}")
+        # Don't fail startup for browser errors
 
 if __name__ == "__main__":
     import uvicorn

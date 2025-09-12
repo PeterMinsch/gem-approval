@@ -38,6 +38,7 @@ interface QueuedComment {
   generated_comment: string;
   post_type: string;
   post_author?: string;
+  post_author_url?: string;
   post_engagement?: string;
   post_images?: string;
   status: string;
@@ -347,6 +348,50 @@ export const CommentQueue: React.FC = () => {
     firstName = firstName.replace(/[.,]/g, '');
     
     return templateText.replace(/\{\{author_name\}\}/g, firstName || "there");
+  };
+
+  const extractFacebookIdFromProfileUrl = (profileUrl: string): string | null => {
+    if (!profileUrl || !profileUrl.includes('facebook.com')) {
+      return null;
+    }
+
+    try {
+      if (profileUrl.includes('profile.php?id=')) {
+        // Extract numeric ID: facebook.com/profile.php?id=123456789
+        const match = profileUrl.match(/id=([^&]+)/);
+        return match ? match[1] : null;
+      } else {
+        // Extract username: facebook.com/john.smith
+        const urlParts = profileUrl.split('facebook.com/')[1];
+        if (urlParts) {
+          const username = urlParts.split('?')[0].split('/')[0];
+          return username && !['profile.php', 'photo', 'groups', 'events'].includes(username) ? username : null;
+        }
+      }
+    } catch (error) {
+      console.error('Error extracting Facebook ID:', error);
+      return null;
+    }
+    return null;
+  };
+
+  const createMessengerLink = (profileUrl: string): string | null => {
+    const facebookId = extractFacebookIdFromProfileUrl(profileUrl);
+    return facebookId ? `https://www.facebook.com/messages/t/${facebookId}` : null;
+  };
+
+  const handleMessageAuthor = (comment: QueuedComment) => {
+    if (!comment.post_author_url) {
+      console.warn('No author profile URL available for messaging');
+      return;
+    }
+
+    const messengerUrl = createMessengerLink(comment.post_author_url);
+    if (messengerUrl) {
+      window.open(messengerUrl, '_blank');
+    } else {
+      console.error('Could not create Messenger link from profile URL:', comment.post_author_url);
+    }
   };
 
   const handleTemplateSelect = (templateId: string, comment: QueuedComment) => {
@@ -811,6 +856,18 @@ export const CommentQueue: React.FC = () => {
                         <ExternalLink className="h-4 w-4 mr-2" />
                         View Post
                       </Button>
+
+                      {comment.post_author_url && comment.post_author && comment.post_author !== "User" && (
+                        <Button
+                          size="sm"
+                          onClick={() => handleMessageAuthor(comment)}
+                          className="bg-gradient-to-r from-blue-500 to-indigo-600 hover:from-blue-600 hover:to-indigo-700 text-white border-0 shadow-sm hover:shadow-md transition-all duration-200 rounded-lg font-medium"
+                          title={`Send message to ${comment.post_author} on Facebook Messenger`}
+                        >
+                          <MessageCircle className="h-4 w-4 mr-2" />
+                          Message {comment.post_author?.split(' ')[0] || 'Author'}
+                        </Button>
+                      )}
 
                       {editingComment !== comment.id && (
                         <div className="flex gap-2">
