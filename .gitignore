@@ -26,8 +26,7 @@ nul
 repopulate_demo.py
 
 
-package-lock.json
-package.json
+
 
 .kilocodemodes
 .bmad-core/
@@ -45,8 +44,6 @@ web-bundles
 AGENTS.md
 .roomodes
 bot_data.db
-package-lock.json
-package.json
 facebook_bot.db
 test_template.json
 vite.config.ts
