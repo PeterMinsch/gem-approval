@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y \
     xauth \
     gnupg \
     ca-certificates \
+    sudo \
     && wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/googlechrome-linux-keyring.gpg \
     && sh -c 'echo "deb [arch=amd64 signed-by=/usr/share/keyrings/googlechrome-linux-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list' \
     && apt-get update \
@@ -29,7 +30,8 @@ COPY bot/ /app/bot/
 # Create non-root user for security and set up directories
 RUN useradd -m -u 1000 botuser && \
     mkdir -p /app/logs /app/chrome_data && \
-    chown -R botuser:botuser /app
+    chown -R botuser:botuser /app && \
+    echo 'botuser ALL=(ALL) NOPASSWD: /bin/mkdir, /bin/chown' >> /etc/sudoers
 
 # Set environment variables
 ENV PYTHONPATH=/app
@@ -47,4 +49,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
 # Start command with virtual display
-CMD ["bash", "-c", "rm -f /tmp/.X99-lock && mkdir -p /tmp/.X11-unix && Xvfb :99 -screen 0 1920x1080x24 & sleep 2 && cd bot && python -m uvicorn api:app --host 0.0.0.0 --port 8000"]
+CMD ["bash", "-c", "sudo mkdir -p /tmp/.X11-unix && sudo chown -R botuser:botuser /app/logs /app/chrome_data && rm -f /tmp/.X99-lock && Xvfb :99 -screen 0 1920x1080x24 & sleep 2 && cd bot && python -m uvicorn api:app --host 0.0.0.0 --port 8000"]
