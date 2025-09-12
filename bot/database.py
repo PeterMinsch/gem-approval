@@ -80,7 +80,7 @@ class BotDatabase:
                 CREATE TABLE IF NOT EXISTS templates (
                     id TEXT PRIMARY KEY,
                     name TEXT UNIQUE NOT NULL,
-                    category TEXT CHECK(category IN ('GENERIC', 'ISO_PIVOT', 'CAD', 'CASTING', 'SETTING', 'ENGRAVING', 'ENAMEL')),
+                    category TEXT CHECK(category IN ('GENERIC', 'ISO_PIVOT', 'CAD', 'CASTING', 'SETTING', 'ENGRAVING', 'ENAMEL', 'DM_SERVICE', 'DM_ISO', 'DM_GENERAL')),
                     body TEXT NOT NULL,
                     image_pack_id TEXT, -- fk to image_packs (nullable)
                     is_default BOOLEAN DEFAULT FALSE,
