@@ -5,18 +5,19 @@ WORKDIR /app
 
 # Copy package files
 COPY package*.json ./
-COPY yarn.lock* ./
 
 # Install dependencies
-RUN npm ci --only=production
+RUN npm ci
 
 # Copy source code
 COPY src/ ./src/
 COPY public/ ./public/
 COPY index.html ./
 COPY vite.config.ts ./
-COPY tsconfig.json ./
-COPY tsconfig.node.json ./
+COPY tsconfig*.json ./
+COPY tailwind.config.ts ./
+COPY postcss.config.js ./
+COPY components.json ./
 
 # Build arguments for API URL
 ARG VITE_API_URL=http://localhost:8000
