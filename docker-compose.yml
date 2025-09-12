@@ -9,10 +9,10 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      # Persist Chrome data and logs
-      - ./logs:/app/logs
-      - ./chrome_data:/app/chrome_data
-      - ./bot_data.db:/app/bot_data.db
+      # Persist Chrome data and logs using named volumes
+      - logs:/app/logs
+      - chrome_data:/app/chrome_data
+      - bot_data:/app/bot_data.db
     environment:
       - POST_URL=${POST_URL}
       - FACEBOOK_USERNAME=${FACEBOOK_USERNAME}
