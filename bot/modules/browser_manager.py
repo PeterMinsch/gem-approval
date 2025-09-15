@@ -15,7 +15,6 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import WebDriverException, TimeoutException
 from webdriver_manager.chrome import ChromeDriverManager
-from webdriver_manager.core.utils import ChromeType
 
 logger = logging.getLogger(__name__)
 
@@ -86,9 +85,10 @@ class BrowserManager:
                 chrome_options.add_argument("--remote-debugging-port=9222")
                 chrome_options.add_argument("--remote-debugging-address=127.0.0.1")
                 
-                # Let ChromeDriver auto-detect browser location
-                # Use ChromeDriver that matches Chromium browser
-                service = Service(ChromeDriverManager(chrome_type=ChromeType.CHROMIUM).install())
+                # Use Chromium snap browser
+                chrome_options.binary_location = "/snap/bin/chromium"
+                # Let webdriver-manager auto-detect the correct ChromeDriver version
+                service = Service(ChromeDriverManager().install())
 
                 self.driver = webdriver.Chrome(service=service, options=chrome_options)
                 # PERFORMANCE FIX: Reduced implicit wait to prevent 73-second delays
@@ -192,8 +192,8 @@ class BrowserManager:
                 
                 self._temp_chrome_dir = user_data_dir
                 
-                # Use ChromeDriver that matches Chromium browser
-                service = Service(ChromeDriverManager(chrome_type=ChromeType.CHROMIUM).install())
+                # Let webdriver-manager auto-detect the correct ChromeDriver version
+                service = Service(ChromeDriverManager().install())
                 self.posting_driver = webdriver.Chrome(service=service, options=chrome_options)
                 
                 # Test the driver and copy session cookies for auto-login
