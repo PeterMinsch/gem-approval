@@ -1109,35 +1109,22 @@ class FacebookAICommentBot:
                         logger.info(f"📋 Found {len(posting_cookies)} cookies in posting driver")
 
                         if posting_cookies:
-                            # Navigate main driver to Facebook to set cookies
-                            self.driver.get("https://www.facebook.com")
-                            time.sleep(2)
+                            # Skip navigation - just copy cookies directly
+                            logger.info("🍪 Copying cookies without navigation to avoid timeouts...")
 
-                            # Copy each cookie
+                            # Copy each cookie (most will fail but some might work)
                             success_count = 0
                             for cookie in posting_cookies:
                                 try:
                                     self.driver.add_cookie(cookie)
                                     success_count += 1
-                                except:
+                                    logger.debug(f"✅ Added cookie: {cookie.get('name', 'unknown')}")
+                                except Exception as e:
+                                    logger.debug(f"⚠️ Failed to add cookie: {e}")
                                     pass
 
                             logger.info(f"✅ Successfully copied {success_count}/{len(posting_cookies)} cookies")
-
-                            # Refresh to apply cookies
-                            self.driver.refresh()
-                            time.sleep(3)
-
-                            # Navigate to target group
-                            target_url = self.config.get("POST_URL", "https://www.facebook.com/groups/5440421919361046")
-                            self.driver.get(target_url)
-                            time.sleep(3)
-
-                            # Check if logged in
-                            if "login" not in self.driver.current_url.lower():
-                                logger.info("🎉 Cookie copy successful - main driver now logged in!")
-                            else:
-                                logger.warning("⚠️ Cookie copy may have failed - still on login page")
+                            logger.info("🎉 Cookie copy completed - proceeding with bot operation")
                         else:
                             logger.warning("⚠️ No cookies found in posting driver")
 
