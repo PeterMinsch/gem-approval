@@ -85,8 +85,7 @@ class BrowserManager:
                 chrome_options.add_argument("--remote-debugging-port=9222")
                 chrome_options.add_argument("--remote-debugging-address=127.0.0.1")
                 
-                # Use Chromium snap for better compatibility on Linux servers
-                chrome_options.binary_location = "/snap/bin/chromium"
+                # Let ChromeDriver auto-detect browser location
                 service = Service(ChromeDriverManager().install())
 
                 self.driver = webdriver.Chrome(service=service, options=chrome_options)
