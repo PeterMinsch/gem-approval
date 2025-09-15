@@ -87,8 +87,8 @@ class BrowserManager:
                 
                 # Use Chromium snap browser
                 chrome_options.binary_location = "/snap/bin/chromium"
-                # Let webdriver-manager auto-detect the correct ChromeDriver version
-                service = Service(ChromeDriverManager().install())
+                # Use manually installed ChromeDriver that matches Chromium version
+                service = Service("/usr/local/bin/chromedriver")
 
                 self.driver = webdriver.Chrome(service=service, options=chrome_options)
                 # PERFORMANCE FIX: Reduced implicit wait to prevent 73-second delays
@@ -192,8 +192,8 @@ class BrowserManager:
                 
                 self._temp_chrome_dir = user_data_dir
                 
-                # Let webdriver-manager auto-detect the correct ChromeDriver version
-                service = Service(ChromeDriverManager().install())
+                # Use manually installed ChromeDriver that matches Chromium version
+                service = Service("/usr/local/bin/chromedriver")
                 self.posting_driver = webdriver.Chrome(service=service, options=chrome_options)
                 
                 # Test the driver and copy session cookies for auto-login
