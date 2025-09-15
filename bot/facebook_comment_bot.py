@@ -1101,14 +1101,48 @@ class FacebookAICommentBot:
             if hasattr(self, 'browser_manager'):
                 logger.debug(f"🔍 Session sync check - posting_driver exists: {self.browser_manager.posting_driver is not None}")
                 if self.browser_manager.posting_driver:
-                    # Try reverse sync first since posting driver is already logged in
-                    logger.info("🔄 Attempting reverse session sync (posting -> main)...")
-                    reverse_success = self.browser_manager.sync_main_driver_session()
-                    if reverse_success:
-                        logger.info("✅ Reverse sync successful - main driver should now be logged in")
-                    else:
-                        logger.info("🔄 Reverse sync failed, trying forward sync...")
-                        self.browser_manager.sync_posting_driver_session()
+                    # Direct cookie copying from posting driver to main driver
+                    logger.info("🔄 Direct cookie copy from posting driver to main driver...")
+                    try:
+                        # Get cookies from posting driver
+                        posting_cookies = self.browser_manager.posting_driver.get_cookies()
+                        logger.info(f"📋 Found {len(posting_cookies)} cookies in posting driver")
+
+                        if posting_cookies:
+                            # Navigate main driver to Facebook to set cookies
+                            self.driver.get("https://www.facebook.com")
+                            time.sleep(2)
+
+                            # Copy each cookie
+                            success_count = 0
+                            for cookie in posting_cookies:
+                                try:
+                                    self.driver.add_cookie(cookie)
+                                    success_count += 1
+                                except:
+                                    pass
+
+                            logger.info(f"✅ Successfully copied {success_count}/{len(posting_cookies)} cookies")
+
+                            # Refresh to apply cookies
+                            self.driver.refresh()
+                            time.sleep(3)
+
+                            # Navigate to target group
+                            target_url = self.config.get("POST_URL", "https://www.facebook.com/groups/5440421919361046")
+                            self.driver.get(target_url)
+                            time.sleep(3)
+
+                            # Check if logged in
+                            if "login" not in self.driver.current_url.lower():
+                                logger.info("🎉 Cookie copy successful - main driver now logged in!")
+                            else:
+                                logger.warning("⚠️ Cookie copy may have failed - still on login page")
+                        else:
+                            logger.warning("⚠️ No cookies found in posting driver")
+
+                    except Exception as e:
+                        logger.error(f"❌ Direct cookie copy failed: {e}")
                 else:
                     logger.debug("ℹ️ Posting driver not available for session sync")
             else:
