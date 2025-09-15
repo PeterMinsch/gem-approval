@@ -48,8 +48,7 @@ facebook_bot.db
 test_template.json
 vite.config.ts
 
-# Uploaded files
-uploads/
+
 
 node_modules
 chrome_data
