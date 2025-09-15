@@ -2479,6 +2479,70 @@ async def manual_facebook_login():
         logger.error(f"Error during manual login: {e}")
         raise HTTPException(status_code=500, detail=f"Login error: {str(e)}")
 
+@app.post("/bot/sync-session")
+async def manual_session_sync():
+    """Manually sync session cookies from posting driver to main driver"""
+    global bot_instance
+    import time
+
+    try:
+        if not bot_instance or not bot_instance.driver:
+            raise HTTPException(status_code=400, detail="Bot is not running")
+
+        if not hasattr(bot_instance, 'browser_manager') or not bot_instance.browser_manager.posting_driver:
+            raise HTTPException(status_code=400, detail="Posting driver not available")
+
+        logger.info("🔄 Manual session sync triggered - copying cookies from posting driver to main driver...")
+
+        # Get cookies from posting driver
+        posting_cookies = bot_instance.browser_manager.posting_driver.get_cookies()
+
+        if not posting_cookies:
+            raise HTTPException(status_code=400, detail="No cookies found in posting driver")
+
+        logger.info(f"📋 Found {len(posting_cookies)} cookies in posting driver")
+
+        # Navigate main driver to Facebook
+        bot_instance.driver.get("https://www.facebook.com")
+        time.sleep(2)
+
+        # Copy each cookie to main driver
+        successful_copies = 0
+        for cookie in posting_cookies:
+            try:
+                bot_instance.driver.add_cookie(cookie)
+                logger.debug(f"✅ Copied cookie: {cookie['name']}")
+                successful_copies += 1
+            except Exception as e:
+                logger.debug(f"⚠️ Failed to copy cookie {cookie['name']}: {e}")
+                continue
+
+        # Refresh main driver to apply cookies
+        bot_instance.driver.refresh()
+        time.sleep(3)
+
+        # Navigate to Facebook group
+        target_url = bot_instance.config.get("POST_URL", "https://www.facebook.com/groups/5440421919361046")
+        bot_instance.driver.get(target_url)
+        time.sleep(3)
+
+        # Check if we're logged in
+        current_url = bot_instance.driver.current_url
+        success = "login" not in current_url.lower()
+
+        logger.info(f"✅ Manual session sync completed - copied {successful_copies}/{len(posting_cookies)} cookies")
+
+        return {
+            "success": success,
+            "message": f"Session sync completed - copied {successful_copies} cookies",
+            "logged_in": success,
+            "current_url": current_url
+        }
+
+    except Exception as e:
+        logger.error(f"Error during manual session sync: {e}")
+        raise HTTPException(status_code=500, detail=f"Session sync error: {str(e)}")
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
