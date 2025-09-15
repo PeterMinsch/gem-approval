@@ -2439,6 +2439,46 @@ async def check_environment_variables():
 
     return env_status
 
+@app.post("/bot/login")
+async def manual_facebook_login():
+    """Manually trigger Facebook login using environment credentials"""
+    global bot_instance
+    import os
+
+    try:
+        if not bot_instance or not bot_instance.driver:
+            raise HTTPException(status_code=400, detail="Bot is not running")
+
+        username = os.environ.get('FACEBOOK_USERNAME')
+        password = os.environ.get('FACEBOOK_PASSWORD')
+
+        if not username or not password:
+            raise HTTPException(status_code=400, detail="Facebook credentials not found in environment variables")
+
+        logger.info("🔑 Manual login triggered - attempting Facebook login...")
+
+        # Use the browser manager's login method
+        success = bot_instance.browser_manager.login_to_facebook(username, password)
+
+        if success:
+            logger.info("✅ Manual login successful!")
+            return {
+                "success": True,
+                "message": "Successfully logged into Facebook",
+                "current_url": bot_instance.driver.current_url
+            }
+        else:
+            logger.error("❌ Manual login failed")
+            return {
+                "success": False,
+                "message": "Login failed - check credentials",
+                "current_url": bot_instance.driver.current_url
+            }
+
+    except Exception as e:
+        logger.error(f"Error during manual login: {e}")
+        raise HTTPException(status_code=500, detail=f"Login error: {str(e)}")
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
