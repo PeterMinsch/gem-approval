@@ -157,11 +157,13 @@ export const BotControl: React.FC = () => {
     try {
       const response = await fetch(`${API_BASE_URL}/bot/live-screenshot`);
       if (response.ok) {
-        const data = await response.json();
-        setLiveScreenshot(data.screenshot);
-        setScreenshotTimestamp(data.timestamp);
-        setCurrentUrl(data.url);
-        addActivityLog("facebook", "Live screenshot captured", data);
+        // The endpoint returns a PNG image directly, not JSON
+        const blob = await response.blob();
+        const imageUrl = URL.createObjectURL(blob);
+        setLiveScreenshot(imageUrl);
+        setScreenshotTimestamp(new Date().toISOString());
+        setCurrentUrl(botStatus?.current_url || null);
+        addActivityLog("facebook", "Live screenshot captured", { timestamp: new Date().toISOString() });
       } else {
         setLiveScreenshot(null);
         addActivityLog("warning", "Live screenshot not available", {
@@ -238,6 +240,10 @@ export const BotControl: React.FC = () => {
     return () => {
       clearInterval(statusInterval);
       clearInterval(liveScreenshotInterval);
+      // Cleanup object URL to prevent memory leaks
+      if (liveScreenshot && liveScreenshot.startsWith('blob:')) {
+        URL.revokeObjectURL(liveScreenshot);
+      }
     };
   }, [isConnected, botStatus?.is_running]);
 

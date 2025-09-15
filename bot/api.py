@@ -2420,6 +2420,25 @@ async def startup_event():
         logger.error(f"❌ Error starting persistent browser: {e}")
         # Don't fail startup for browser errors
 
+@app.get("/debug/env")
+async def check_environment_variables():
+    """Debug endpoint to check environment variables (remove in production)"""
+    import os
+
+    env_status = {
+        "FACEBOOK_USERNAME": "SET" if os.environ.get('FACEBOOK_USERNAME') else "NOT SET",
+        "FACEBOOK_PASSWORD": "SET" if os.environ.get('FACEBOOK_PASSWORD') else "NOT SET",
+        "OPENAI_API_KEY": "SET" if os.environ.get('OPENAI_API_KEY') else "NOT SET",
+        "POST_URL": os.environ.get('POST_URL', 'NOT SET'),
+        "all_env_vars": list(os.environ.keys())
+    }
+
+    # Don't log actual values for security
+    logger.info(f"Environment check - FACEBOOK_USERNAME: {env_status['FACEBOOK_USERNAME']}")
+    logger.info(f"Environment check - FACEBOOK_PASSWORD: {env_status['FACEBOOK_PASSWORD']}")
+
+    return env_status
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

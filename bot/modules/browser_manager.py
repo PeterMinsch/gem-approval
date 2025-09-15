@@ -101,6 +101,10 @@ class BrowserManager:
                 try:
                     self.driver.execute_script("return navigator.userAgent;")
                     logger.info(f"✅ Chrome driver connected successfully (session: {self.driver.session_id[:8]}...)")
+
+                    # Attempt automatic login if credentials are available
+                    self._attempt_auto_login()
+
                     return self.driver
                     
                 except Exception as test_error:
@@ -566,3 +570,30 @@ class BrowserManager:
                     logger.debug(f"Error closing old driver: {e}")
             self.setup_driver()
             logger.info("Driver reconnection completed")
+
+    def _attempt_auto_login(self):
+        """
+        Attempt automatic login using environment variables if available
+        """
+        import os
+
+        try:
+            # Get credentials from environment variables
+            username = os.environ.get('FACEBOOK_USERNAME')
+            password = os.environ.get('FACEBOOK_PASSWORD')
+
+            if not username or not password:
+                logger.debug("No Facebook credentials found in environment variables - skipping auto-login")
+                return
+
+            logger.info("🔑 Facebook credentials found - attempting automatic login...")
+
+            # Use the existing login method
+            if self.login_to_facebook(username, password):
+                logger.info("✅ Automatic login successful!")
+            else:
+                logger.warning("⚠️ Automatic login failed - manual login may be required")
+
+        except Exception as e:
+            logger.warning(f"⚠️ Auto-login attempt failed: {e}")
+            logger.debug("Manual login may be required")
