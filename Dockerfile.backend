@@ -29,7 +29,7 @@ COPY bot/ /app/bot/
 
 # Create non-root user for security and set up directories
 RUN useradd -m -u 1000 botuser && \
-    mkdir -p /app/logs /app/chrome_data && \
+    mkdir -p /app/logs /app/chrome_data /app/bot/uploads && \
     chown -R botuser:botuser /app && \
     echo 'botuser ALL=(ALL) NOPASSWD: /bin/mkdir, /bin/chown' >> /etc/sudoers
 
