@@ -1103,6 +1103,14 @@ class FacebookAICommentBot:
                 if self.browser_manager.posting_driver:
                     logger.info("🔄 Syncing session to posting driver...")
                     self.browser_manager.sync_posting_driver_session()
+
+                    # Also try reverse sync in case posting driver is already logged in
+                    logger.info("🔄 Attempting reverse session sync (posting -> main)...")
+                    reverse_success = self.browser_manager.sync_main_driver_session()
+                    if reverse_success:
+                        logger.info("✅ Reverse sync successful - main driver should now be logged in")
+                    else:
+                        logger.debug("ℹ️ Reverse sync not needed or failed")
                 else:
                     logger.debug("ℹ️ Posting driver not available for session sync")
             else:

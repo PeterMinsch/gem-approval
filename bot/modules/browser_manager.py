@@ -237,22 +237,52 @@ class BrowserManager:
     def sync_posting_driver_session(self) -> bool:
         """
         Sync session cookies from main driver to posting driver after both are available
-        
+
         Returns:
             True if sync successful, False otherwise
         """
         if not self.driver or not self.posting_driver:
             logger.warning("Cannot sync sessions: one or both drivers not available")
             return False
-            
+
         logger.info("🔄 Syncing session cookies to posting driver...")
         success = self._copy_session_cookies()
-        
+
         if success:
             logger.info("🎉 Session sync successful - posting driver now logged in!")
         else:
             logger.warning("⚠️ Session sync failed - posting driver may require manual login")
-            
+
+        return success
+
+    def sync_main_driver_session(self) -> bool:
+        """
+        Sync session cookies from posting driver to main driver when posting driver is logged in
+
+        Returns:
+            True if sync successful, False otherwise
+        """
+        if not self.driver or not self.posting_driver:
+            logger.warning("Cannot sync sessions: one or both drivers not available")
+            return False
+
+        logger.info("🔄 Syncing session cookies from posting driver to main driver...")
+        success = self._copy_session_cookies_reverse()
+
+        if success:
+            logger.info("🎉 Reverse session sync successful - main driver now logged in!")
+            # Navigate to the group page after successful login
+            try:
+                target_url = self.config.get("POST_URL", "https://www.facebook.com/groups/5440421919361046")
+                logger.info(f"Navigating to: {target_url}")
+                self.driver.get(target_url)
+                time.sleep(3)
+                logger.info("✅ Successfully navigated to Facebook group after login")
+            except Exception as e:
+                logger.warning(f"Failed to navigate after login: {e}")
+        else:
+            logger.warning("⚠️ Reverse session sync failed - main driver still needs login")
+
         return success
     
     def _copy_session_cookies(self) -> bool:
@@ -416,7 +446,85 @@ class BrowserManager:
         except Exception as e:
             logger.error(f"❌ Failed to copy session cookies: {e}")
             return False
-    
+
+    def _copy_session_cookies_reverse(self) -> bool:
+        """
+        Copy session cookies from posting driver to main driver (reverse direction)
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            logger.debug("🚀 _copy_session_cookies_reverse() method started")
+
+            # Store current main driver URL
+            main_current_url = self.driver.current_url
+
+            # Get cookies from posting driver
+            logger.info("📋 Getting cookies from posting driver...")
+            posting_cookies = self.posting_driver.get_cookies()
+
+            logger.info(f"📋 Found {len(posting_cookies)} cookies in posting driver")
+
+            if not posting_cookies:
+                logger.warning("⚠️ No cookies found in posting driver")
+                return False
+
+            # Navigate main driver to Facebook to receive cookies
+            logger.debug("Navigating main driver to Facebook for cookie setting...")
+            self.driver.get("https://www.facebook.com")
+            time.sleep(2)
+
+            # Copy each cookie to main driver
+            successful_copies = 0
+            for cookie in posting_cookies:
+                try:
+                    self.driver.add_cookie(cookie)
+                    logger.debug(f"✅ Copied cookie: {cookie['name']} (domain: {cookie.get('domain', 'unknown')})")
+                    successful_copies += 1
+                except Exception as e:
+                    logger.debug(f"⚠️ Failed to copy cookie {cookie['name']}: {e}")
+                    continue
+
+            logger.info(f"✅ Successfully copied {successful_copies}/{len(posting_cookies)} cookies to main driver")
+
+            # Verify the login worked by checking for critical cookies
+            main_cookies = self.driver.get_cookies()
+            main_cookie_names = [c['name'] for c in main_cookies]
+
+            critical_cookies = ['fr', 'sb', 'datr']
+            auth_cookies = ['c_user', 'xs']
+
+            found_critical = [name for name in critical_cookies if name in main_cookie_names]
+            found_auth = [name for name in auth_cookies if name in main_cookie_names]
+
+            logger.debug(f"🔑 Important session cookies found: {found_critical}")
+            if not found_auth:
+                logger.warning("⚠️ Critical session cookies (c_user, xs) may be missing!")
+
+            # Refresh main driver to apply cookies
+            logger.debug("🔄 Refreshing main driver to apply cookies...")
+            self.driver.refresh()
+            time.sleep(3)
+
+            # Verify login by checking current state
+            current_url = self.driver.current_url
+            logger.debug(f"🔍 Login verification - Current URL: {current_url}")
+
+            # Check if we're logged in
+            success = "login" not in current_url.lower()
+
+            if success:
+                logger.info("🎉 Reverse session sync successful - main driver logged in!")
+            else:
+                logger.warning("⚠️ Reverse session sync may have failed - still on login page")
+
+            return success
+
+        except Exception as e:
+            logger.error(f"❌ Failed to copy session cookies in reverse: {e}")
+            return False
+
     def login_to_facebook(self, username: str, password: str) -> bool:
         """
         Login to Facebook using provided credentials
