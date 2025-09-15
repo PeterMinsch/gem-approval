@@ -85,8 +85,10 @@ class BrowserManager:
                 chrome_options.add_argument("--remote-debugging-port=9222")
                 chrome_options.add_argument("--remote-debugging-address=127.0.0.1")
                 
+                # Use Chromium instead of Chrome for better compatibility on Linux servers
+                chrome_options.binary_location = "/usr/bin/chromium-browser"
                 service = Service(ChromeDriverManager().install())
-                
+
                 self.driver = webdriver.Chrome(service=service, options=chrome_options)
                 # PERFORMANCE FIX: Reduced implicit wait to prevent 73-second delays
                 # Use explicit waits (WebDriverWait) for specific elements instead
