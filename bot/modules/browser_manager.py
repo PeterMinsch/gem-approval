@@ -86,7 +86,8 @@ class BrowserManager:
                 chrome_options.add_argument("--remote-debugging-address=127.0.0.1")
                 
                 # Let ChromeDriver auto-detect browser location
-                service = Service(ChromeDriverManager().install())
+                # Force ChromeDriver version to match Chromium 140
+                service = Service(ChromeDriverManager(driver_version="140.0.7339.127").install())
 
                 self.driver = webdriver.Chrome(service=service, options=chrome_options)
                 # PERFORMANCE FIX: Reduced implicit wait to prevent 73-second delays
@@ -190,7 +191,8 @@ class BrowserManager:
                 
                 self._temp_chrome_dir = user_data_dir
                 
-                service = Service(ChromeDriverManager().install())
+                # Force ChromeDriver version to match Chromium 140
+                service = Service(ChromeDriverManager(driver_version="140.0.7339.127").install())
                 self.posting_driver = webdriver.Chrome(service=service, options=chrome_options)
                 
                 # Test the driver and copy session cookies for auto-login
