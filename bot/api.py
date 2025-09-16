@@ -879,6 +879,31 @@ def run_bot_with_queuing(bot_instance: FacebookAICommentBot, max_scrolls: int = 
             logger.info(f"Navigating to: {target_url}")
             
             bot_instance.driver.get(target_url)
+
+            # Check if we got redirected to login page after navigation
+            current_url = bot_instance.driver.current_url.lower()
+            if "login" in current_url:
+                logger.warning("⚠️ Redirected to login page after navigation - attempting re-authentication...")
+
+                # Try to login again using credentials
+                username = os.environ.get('FACEBOOK_USERNAME')
+                password = os.environ.get('FACEBOOK_PASSWORD')
+
+                if username and password:
+                    if bot_instance.browser_manager.login_to_facebook(username, password):
+                        logger.info("✅ Re-authentication successful, trying navigation again...")
+                        bot_instance.driver.get(target_url)
+
+                        # Check again after re-auth
+                        if "login" in bot_instance.driver.current_url.lower():
+                            logger.error("❌ Still on login page after re-authentication")
+                        else:
+                            logger.info("✅ Successfully navigated to target after re-authentication")
+                    else:
+                        logger.error("❌ Re-authentication failed")
+                else:
+                    logger.error("❌ No credentials available for re-authentication")
+
             logger.info("Successfully navigated to Facebook")
             
             # Check if we're targeting a specific post URL

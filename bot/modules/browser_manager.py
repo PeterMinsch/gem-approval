@@ -722,9 +722,16 @@ class BrowserManager:
     def _is_full_login_page(self) -> bool:
         """Check if this is a full login page with email and password"""
         try:
-            # Look for both email and password fields
-            has_email_field = len(self.driver.find_elements(By.NAME, "email")) > 0 or len(self.driver.find_elements(By.ID, "email")) > 0
-            has_password_field = len(self.driver.find_elements(By.NAME, "pass")) > 0
+            # Look for both email and password fields using confirmed selectors
+            has_email_field = (
+                len(self.driver.find_elements(By.CSS_SELECTOR, "input[data-testid='royal-email']")) > 0 or
+                len(self.driver.find_elements(By.NAME, "email")) > 0 or
+                len(self.driver.find_elements(By.ID, "email")) > 0
+            )
+            has_password_field = (
+                len(self.driver.find_elements(By.CSS_SELECTOR, "input[data-testid='royal-pass']")) > 0 or
+                len(self.driver.find_elements(By.NAME, "pass")) > 0
+            )
 
             return has_email_field and has_password_field
         except:
@@ -766,17 +773,18 @@ class BrowserManager:
             return False
 
     def _handle_full_login(self, username: str, password: str) -> bool:
-        """Handle full login page with email and password"""
+        """Handle full login page with email and password using confirmed Facebook selectors"""
         try:
             logger.info("Handling full login...")
 
-            # Try multiple selectors for email field
+            # Try multiple selectors for email field (prioritizing confirmed ones)
             email_field = None
             email_selectors = [
+                (By.CSS_SELECTOR, "input[data-testid='royal-email']"),  # ✅ Confirmed Facebook selector
+                (By.ID, "email"),  # ✅ Confirmed from your elements
                 (By.NAME, "email"),
-                (By.ID, "email"),
-                (By.CSS_SELECTOR, "input[type='email']"),
-                (By.CSS_SELECTOR, "input[name='email']")
+                (By.CSS_SELECTOR, "input[type='text'][name='email']"),
+                (By.CSS_SELECTOR, "input[placeholder*='Email']")
             ]
 
             for selector_type, selector_value in email_selectors:
@@ -797,23 +805,44 @@ class BrowserManager:
             email_field.send_keys(username)
             logger.debug("✅ Email entered")
 
-            # Find password field
-            password_field = WebDriverWait(self.driver, 10).until(
-                EC.presence_of_element_located((By.NAME, "pass"))
-            )
+            # Find password field using confirmed selectors
+            password_field = None
+            password_selectors = [
+                (By.CSS_SELECTOR, "input[data-testid='royal-pass']"),  # ✅ Confirmed Facebook selector
+                (By.ID, "pass"),  # ✅ Confirmed from your elements
+                (By.NAME, "pass"),
+                (By.CSS_SELECTOR, "input[type='password']")
+            ]
+
+            for selector_type, selector_value in password_selectors:
+                try:
+                    password_field = WebDriverWait(self.driver, 5).until(
+                        EC.presence_of_element_located((selector_type, selector_value))
+                    )
+                    logger.debug(f"✅ Password field found with selector: {selector_type}={selector_value}")
+                    break
+                except:
+                    continue
+
+            if not password_field:
+                logger.error("❌ Could not find password field")
+                return False
+
             password_field.clear()
             password_field.send_keys(password)
             logger.debug("✅ Password entered")
 
-            # Find and click login button
+            # Find and click login button using confirmed selectors
+            login_button = None
             login_selectors = [
-                (By.NAME, "login"),
+                (By.CSS_SELECTOR, "button[data-testid='royal-login-button']"),  # ✅ Confirmed Facebook selector
+                (By.NAME, "login"),  # ✅ Confirmed from your elements
+                (By.ID, "u_0_b_Ra"),  # ✅ Your specific button ID (may change)
                 (By.CSS_SELECTOR, "button[name='login']"),
-                (By.CSS_SELECTOR, "input[type='submit']"),
-                (By.CSS_SELECTOR, "button[type='submit']")
+                (By.CSS_SELECTOR, "button[type='submit']"),
+                (By.CSS_SELECTOR, "input[type='submit']")
             ]
 
-            login_button = None
             for selector_type, selector_value in login_selectors:
                 try:
                     login_button = WebDriverWait(self.driver, 5).until(
