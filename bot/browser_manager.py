@@ -1,6 +1,7 @@
 import asyncio
 import os
 import time
+import platform
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
@@ -20,6 +21,93 @@ class MessengerBrowserManager:
         # NEW: Persistent browser for all messenger automation
         self.persistent_browser: Optional[webdriver.Chrome] = None
         self._browser_ready = False
+
+    def _find_chrome_binary(self) -> str:
+        """Find Chrome binary path based on operating system"""
+        system = platform.system().lower()
+
+        if system == 'linux':
+            # Common Chrome paths on Linux
+            linux_paths = [
+                '/usr/bin/google-chrome',
+                '/usr/bin/google-chrome-stable',
+                '/usr/bin/chromium',
+                '/usr/bin/chromium-browser',
+                '/snap/bin/chromium',
+                '/opt/google/chrome/chrome',
+                '/usr/local/bin/google-chrome',
+                '/usr/local/bin/chromium'
+            ]
+
+            for path in linux_paths:
+                if os.path.exists(path):
+                    logger.info(f"Found Chrome binary at: {path}")
+                    return path
+
+            # If no binary found, return None to let selenium auto-detect
+            logger.warning("No Chrome binary found in common locations, letting selenium auto-detect")
+            return None
+
+        elif system == 'windows':
+            # Windows Chrome paths
+            windows_paths = [
+                "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+                "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+                os.path.expanduser("~\\AppData\\Local\\Google\\Chrome\\Application\\chrome.exe")
+            ]
+
+            for path in windows_paths:
+                if os.path.exists(path):
+                    logger.info(f"Found Chrome binary at: {path}")
+                    return path
+
+        elif system == 'darwin':  # macOS
+            mac_paths = [
+                '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+                '/Applications/Chromium.app/Contents/MacOS/Chromium'
+            ]
+
+            for path in mac_paths:
+                if os.path.exists(path):
+                    logger.info(f"Found Chrome binary at: {path}")
+                    return path
+
+        logger.warning(f"No Chrome binary found for {system}, letting selenium auto-detect")
+        return None
+
+    def _find_chromedriver_binary(self) -> str:
+        """Find ChromeDriver binary path based on operating system"""
+        system = platform.system().lower()
+
+        if system == 'linux':
+            # Common ChromeDriver paths on Linux
+            linux_paths = [
+                '/usr/bin/chromedriver',
+                '/usr/local/bin/chromedriver',
+                '/opt/chromedriver/chromedriver',
+                './chromedriver'
+            ]
+
+            for path in linux_paths:
+                if os.path.exists(path):
+                    logger.info(f"Found ChromeDriver at: {path}")
+                    return path
+
+        elif system == 'windows':
+            # Windows ChromeDriver paths
+            windows_paths = [
+                "chromedriver.exe",
+                "C:\\chromedriver\\chromedriver.exe",
+                "C:\\tools\\chromedriver.exe"
+            ]
+
+            for path in windows_paths:
+                if os.path.exists(path):
+                    logger.info(f"Found ChromeDriver at: {path}")
+                    return path
+
+        logger.info("No ChromeDriver found in common locations, letting selenium auto-detect")
+        return None
         
     def get_messenger_browser(self, session_id: str) -> webdriver.Chrome:
         """Get persistent browser - with auto-restart capability"""
@@ -59,23 +147,18 @@ class MessengerBrowserManager:
             chrome_options.add_argument("--disable-web-security")
             chrome_options.add_argument("--disable-features=VizDisplayCompositor")
 
-            # Use the Chrome installation we found
-            chrome_options.binary_location = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+            # Auto-detect Chrome binary based on OS
+            chrome_binary = self._find_chrome_binary()
+            if chrome_binary:
+                chrome_options.binary_location = chrome_binary
+            else:
+                logger.info("Using selenium auto-detection for Chrome binary")
 
-            # Try to find ChromeDriver in common locations
-            chromedriver_paths = [
-                "chromedriver.exe",  # Current directory
-                "C:\\chromedriver\\chromedriver.exe",
-                "C:\\tools\\chromedriver.exe"
-            ]
-
-            service = None
-            for path in chromedriver_paths:
-                if os.path.exists(path):
-                    service = Service(path)
-                    break
-
-            if not service:
+            # Auto-detect ChromeDriver based on OS
+            chromedriver_path = self._find_chromedriver_binary()
+            if chromedriver_path:
+                service = Service(chromedriver_path)
+            else:
                 # Let Selenium try to find ChromeDriver automatically
                 service = Service()
 
@@ -134,23 +217,18 @@ class MessengerBrowserManager:
             chrome_options.add_argument("--disable-web-security")
             chrome_options.add_argument("--disable-features=VizDisplayCompositor")
 
-            # Use the Chrome installation we found
-            chrome_options.binary_location = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+            # Auto-detect Chrome binary based on OS
+            chrome_binary = self._find_chrome_binary()
+            if chrome_binary:
+                chrome_options.binary_location = chrome_binary
+            else:
+                logger.info("Using selenium auto-detection for Chrome binary")
 
-            # Try to find ChromeDriver in common locations
-            chromedriver_paths = [
-                "chromedriver.exe",  # Current directory
-                "C:\\chromedriver\\chromedriver.exe",
-                "C:\\tools\\chromedriver.exe"
-            ]
-
-            service = None
-            for path in chromedriver_paths:
-                if os.path.exists(path):
-                    service = Service(path)
-                    break
-
-            if not service:
+            # Auto-detect ChromeDriver based on OS
+            chromedriver_path = self._find_chromedriver_binary()
+            if chromedriver_path:
+                service = Service(chromedriver_path)
+            else:
                 # Let Selenium try to find ChromeDriver automatically
                 service = Service()
 
