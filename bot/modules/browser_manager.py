@@ -243,8 +243,8 @@ class BrowserManager:
                 logger.info("Setting up Chrome driver for posting...")
 
                 chrome_options = Options()
-                # Run in headless mode for server environment
-                chrome_options.add_argument("--headless")
+                # Run in NON-headless mode for posting browser to avoid Facebook bot detection
+                # (Virtual display via Xvfb handles the visual output)
                 chrome_options.add_argument("--no-sandbox")
                 chrome_options.add_argument("--disable-dev-shm-usage")
                 chrome_options.add_argument("--disable-gpu")
