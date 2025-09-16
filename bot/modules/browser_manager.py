@@ -8,13 +8,12 @@ import time
 import logging
 from typing import Optional
 from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.firefox.service import Service
+from selenium.webdriver.firefox.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import WebDriverException, TimeoutException
-from webdriver_manager.chrome import ChromeDriverManager
 
 logger = logging.getLogger(__name__)
 
@@ -30,11 +29,11 @@ class BrowserManager:
             config: Configuration dictionary with browser settings
         """
         self.config = config
-        self.driver: Optional[webdriver.Chrome] = None
-        self.posting_driver: Optional[webdriver.Chrome] = None
+        self.driver: Optional[webdriver.Firefox] = None
+        self.posting_driver: Optional[webdriver.Firefox] = None
         self._temp_chrome_dir: Optional[str] = None
     
-    def setup_driver(self) -> webdriver.Chrome:
+    def setup_driver(self) -> webdriver.Firefox:
         """
         Setup main Chrome driver with connection validation and retry logic
         
@@ -49,48 +48,35 @@ class BrowserManager:
         
         for attempt in range(MAX_RETRIES):
             try:
-                logger.info(f"Attempting to start Chrome driver (attempt {attempt + 1}/{MAX_RETRIES})...")
-                
-                # Set environment for Chrome stability
-                os.environ['CHROME_LOG_FILE'] = 'nul'
-                
-                chrome_options = Options()
-                # Use PROVEN working configuration from posting driver
-                chrome_options.add_argument("--headless")  # Run in headless mode
-                chrome_options.add_argument("--no-sandbox")
-                chrome_options.add_argument("--disable-dev-shm-usage")
-                chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-                chrome_options.add_argument("--disable-notifications")
-                chrome_options.add_argument("--disable-popup-blocking")
-                chrome_options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
-                chrome_options.add_experimental_option('useAutomationExtension', False)
-                chrome_options.add_argument("--log-level=3")
-                chrome_options.add_argument("--silent")
-                
-                # User data and profile settings
-                user_data_dir = os.path.join(os.getcwd(), "chrome_data")
-                chrome_options.add_argument(f"--user-data-dir={user_data_dir}")
-                chrome_options.add_argument(f"--profile-directory={self.config.get('CHROME_PROFILE', 'Default')}")
-                
-                # Set window size
-                chrome_options.add_argument("--window-size=1920,1080")
-                
-                # Connection pool optimization arguments
-                chrome_options.add_argument("--max-connections-per-host=10")
-                chrome_options.add_argument("--max-connections-per-proxy=8") 
-                chrome_options.add_argument("--aggressive-cache-discard")
-                chrome_options.add_argument("--disable-background-networking")
-                
-                # Enable remote debugging on main port
-                chrome_options.add_argument("--remote-debugging-port=9222")
-                chrome_options.add_argument("--remote-debugging-address=127.0.0.1")
-                
-                # Use Chromium snap browser
-                chrome_options.binary_location = "/snap/bin/chromium"
-                # Use manually installed ChromeDriver that matches Chromium version
-                service = Service("/usr/local/bin/chromedriver")
+                logger.info(f"Attempting to start Firefox driver (attempt {attempt + 1}/{MAX_RETRIES})...")
 
-                self.driver = webdriver.Chrome(service=service, options=chrome_options)
+                firefox_options = Options()
+                # Run in headless mode for server environment
+                firefox_options.add_argument("--headless")
+
+                # Disable notifications and automation detection
+                firefox_options.set_preference("dom.webnotifications.enabled", False)
+                firefox_options.set_preference("dom.push.enabled", False)
+
+                # Set window size
+                firefox_options.add_argument("--width=1920")
+                firefox_options.add_argument("--height=1080")
+
+                # Disable automation indicators
+                firefox_options.set_preference("dom.webdriver.enabled", False)
+                firefox_options.set_preference("useAutomationExtension", False)
+
+                # Performance optimizations
+                firefox_options.set_preference("browser.cache.disk.enable", False)
+                firefox_options.set_preference("browser.cache.memory.enable", False)
+                firefox_options.set_preference("browser.cache.offline.enable", False)
+                firefox_options.set_preference("network.http.use-cache", False)
+
+                # Use Firefox snap browser and GeckoDriver
+                firefox_options.binary_location = "/snap/bin/firefox"
+                service = Service("/usr/local/bin/geckodriver")
+
+                self.driver = webdriver.Firefox(service=service, options=firefox_options)
                 # PERFORMANCE FIX: Reduced implicit wait to prevent 73-second delays
                 # Use explicit waits (WebDriverWait) for specific elements instead
                 self.driver.implicitly_wait(1)  # Reduced from 10 seconds
@@ -130,7 +116,7 @@ class BrowserManager:
                 logger.error(f"Unexpected error setting up Chrome Driver: {e}")
                 raise
     
-    def setup_posting_driver(self) -> webdriver.Chrome:
+    def setup_posting_driver(self) -> webdriver.Firefox:
         """
         Set up a second browser for posting comments with retry logic
         
@@ -163,38 +149,33 @@ class BrowserManager:
                         logger.debug(f"Failed to cleanup temp directory: {e}")
                     self._temp_chrome_dir = None
                 
-                logger.info("Setting up Chrome driver for posting...")
-                
-                # Set environment for Chrome stability
-                os.environ['CHROME_LOG_FILE'] = 'nul'
-                
-                chrome_options = Options()
-                chrome_options.add_argument("--headless")  # Run in headless mode
-                chrome_options.add_argument("--no-sandbox")
-                chrome_options.add_argument("--disable-dev-shm-usage")
-                chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-                chrome_options.add_argument("--disable-notifications")
-                chrome_options.add_argument("--disable-popup-blocking")
-                chrome_options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
-                chrome_options.add_experimental_option('useAutomationExtension', False)
-                chrome_options.add_argument("--log-level=3")
-                chrome_options.add_argument("--silent")
-                
-                # Use separate profile to avoid conflicts
-                import uuid
-                unique_id = str(uuid.uuid4())[:8]
-                user_data_dir = os.path.join(os.getcwd(), f"chrome_posting_temp_{unique_id}")
-                chrome_options.add_argument(f"--user-data-dir={user_data_dir}")
-                chrome_options.add_argument(f"--profile-directory=PostingProfile")
-                
-                # Use different remote debugging port to avoid conflicts
-                chrome_options.add_argument("--remote-debugging-port=9223")
-                
-                self._temp_chrome_dir = user_data_dir
-                
-                # Use manually installed ChromeDriver that matches Chromium version
-                service = Service("/usr/local/bin/chromedriver")
-                self.posting_driver = webdriver.Chrome(service=service, options=chrome_options)
+                logger.info("Setting up Firefox driver for posting...")
+
+                firefox_options = Options()
+                # Run in headless mode for server environment
+                firefox_options.add_argument("--headless")
+
+                # Disable notifications and automation detection
+                firefox_options.set_preference("dom.webnotifications.enabled", False)
+                firefox_options.set_preference("dom.push.enabled", False)
+
+                # Set window size
+                firefox_options.add_argument("--width=1920")
+                firefox_options.add_argument("--height=1080")
+
+                # Disable automation indicators
+                firefox_options.set_preference("dom.webdriver.enabled", False)
+                firefox_options.set_preference("useAutomationExtension", False)
+
+                # Performance optimizations
+                firefox_options.set_preference("browser.cache.disk.enable", False)
+                firefox_options.set_preference("browser.cache.memory.enable", False)
+
+                # Use Firefox snap browser and GeckoDriver
+                firefox_options.binary_location = "/snap/bin/firefox"
+                service = Service("/usr/local/bin/geckodriver")
+
+                self.posting_driver = webdriver.Firefox(service=service, options=firefox_options)
                 
                 # Test the driver and copy session cookies for auto-login
                 self.posting_driver.get("https://www.facebook.com")

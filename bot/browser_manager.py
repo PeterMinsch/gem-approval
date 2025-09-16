@@ -2,9 +2,8 @@ import asyncio
 import os
 import time
 from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
+from selenium.webdriver.firefox.options import Options
+from selenium.webdriver.firefox.service import Service
 from typing import Dict, Optional
 import logging
 from browser_recovery import BrowserRecovery
@@ -14,15 +13,15 @@ logger = logging.getLogger(__name__)
 class MessengerBrowserManager:
     def __init__(self, max_concurrent: int = 3):
         self.main_bot_browser = None
-        self.messenger_browsers: Dict[str, webdriver.Chrome] = {}
+        self.messenger_browsers: Dict[str, webdriver.Firefox] = {}
         self.max_concurrent = max_concurrent
         self.request_queue = asyncio.Queue()
         self.recovery = BrowserRecovery(self)
         # NEW: Persistent browser for all messenger automation
-        self.persistent_browser: Optional[webdriver.Chrome] = None
+        self.persistent_browser: Optional[webdriver.Firefox] = None
         self._browser_ready = False
         
-    def get_messenger_browser(self, session_id: str) -> webdriver.Chrome:
+    def get_messenger_browser(self, session_id: str) -> webdriver.Firefox:
         """Get persistent browser - with auto-restart capability"""
         try:
             # Try to get the persistent browser
@@ -40,37 +39,37 @@ class MessengerBrowserManager:
                 logger.error(f"❌ Failed to restart persistent browser: {restart_error}")
                 raise Exception(f"Persistent browser not available and restart failed: {restart_error}")
     
-    def _create_messenger_browser(self, session_id: str) -> webdriver.Chrome:
+    def _create_messenger_browser(self, session_id: str) -> webdriver.Firefox:
         """Create messenger browser using EXACT same config as working posting driver"""
         
         try:
-            logger.info(f"🔄 Creating Chrome browser for messenger session {session_id}")
-            
-            # Use EXACT same configuration as your working posting driver
-            # Set environment for Chrome stability
-            os.environ['CHROME_LOG_FILE'] = 'nul'
-            
-            chrome_options = Options()
-            chrome_options.add_argument("--no-sandbox")
-            chrome_options.add_argument("--disable-dev-shm-usage")
-            chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-            chrome_options.add_argument("--disable-notifications")
-            chrome_options.add_argument("--disable-popup-blocking")
-            chrome_options.add_argument("--start-minimized")
-            chrome_options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
-            chrome_options.add_experimental_option('useAutomationExtension', False)
-            chrome_options.add_argument("--log-level=3")
-            chrome_options.add_argument("--silent")
-            
-            # Use a separate profile directory EXACTLY like your posting driver
-            import uuid
-            unique_id = str(uuid.uuid4())[:8]
-            user_data_dir = os.path.join(os.getcwd(), f"chrome_posting_temp_{unique_id}")
-            chrome_options.add_argument(f"--user-data-dir={user_data_dir}")
-            chrome_options.add_argument(f"--profile-directory=PostingProfile")
-            
-            service = Service(ChromeDriverManager().install())
-            browser = webdriver.Chrome(service=service, options=chrome_options)
+            logger.info(f"🔄 Creating Firefox browser for messenger session {session_id}")
+
+            firefox_options = Options()
+            # Run in headless mode for server environment
+            firefox_options.add_argument("--headless")
+
+            # Disable notifications and automation detection
+            firefox_options.set_preference("dom.webnotifications.enabled", False)
+            firefox_options.set_preference("dom.push.enabled", False)
+
+            # Set window size
+            firefox_options.add_argument("--width=1920")
+            firefox_options.add_argument("--height=1080")
+
+            # Disable automation indicators
+            firefox_options.set_preference("dom.webdriver.enabled", False)
+            firefox_options.set_preference("useAutomationExtension", False)
+
+            # Performance optimizations
+            firefox_options.set_preference("browser.cache.disk.enable", False)
+            firefox_options.set_preference("browser.cache.memory.enable", False)
+
+            # Use Firefox snap browser and GeckoDriver
+            firefox_options.binary_location = "/snap/bin/firefox"
+            service = Service("/usr/local/bin/geckodriver")
+
+            browser = webdriver.Firefox(service=service, options=firefox_options)
             
             # Set implicit wait and page load timeout
             browser.implicitly_wait(1)
@@ -85,7 +84,7 @@ class MessengerBrowserManager:
             logger.error(f"❌ Failed to create Chrome browser for session {session_id}: {e}")
             raise Exception(f"Failed to create Chrome browser: {e}")
     
-    def _is_browser_alive(self, browser: webdriver.Chrome) -> bool:
+    def _is_browser_alive(self, browser: webdriver.Firefox) -> bool:
         """Check if browser is still responsive"""
         try:
             browser.current_url
@@ -110,35 +109,32 @@ class MessengerBrowserManager:
             
         try:
             logger.info("🚀 Starting persistent messenger browser...")
-            
-            # Set environment for Chrome stability
-            os.environ['CHROME_LOG_FILE'] = 'nul'
-            
-            chrome_options = Options()
-            chrome_options.add_argument("--no-sandbox")
-            chrome_options.add_argument("--disable-dev-shm-usage")
-            chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-            chrome_options.add_argument("--disable-notifications")
-            chrome_options.add_argument("--disable-popup-blocking")
-            chrome_options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
-            chrome_options.add_experimental_option('useAutomationExtension', False)
-            chrome_options.add_argument("--log-level=3")
-            chrome_options.add_argument("--silent")
-            
-            # Use persistent profile directory
-            user_data_dir = os.path.join(os.getcwd(), "chrome_messenger_persistent")
-            chrome_options.add_argument(f"--user-data-dir={user_data_dir}")
-            chrome_options.add_argument(f"--profile-directory=MessengerProfile")
-            
-            # Set window size and position
-            chrome_options.add_argument("--window-size=1200,800")
-            chrome_options.add_argument("--window-position=100,100")
-            
-            # Use different debugging port to avoid conflicts
-            chrome_options.add_argument("--remote-debugging-port=9224")
-            
-            service = Service(ChromeDriverManager().install())
-            self.persistent_browser = webdriver.Chrome(service=service, options=chrome_options)
+
+            firefox_options = Options()
+            # Run in headless mode for server environment
+            firefox_options.add_argument("--headless")
+
+            # Disable notifications and automation detection
+            firefox_options.set_preference("dom.webnotifications.enabled", False)
+            firefox_options.set_preference("dom.push.enabled", False)
+
+            # Set window size
+            firefox_options.add_argument("--width=1200")
+            firefox_options.add_argument("--height=800")
+
+            # Disable automation indicators
+            firefox_options.set_preference("dom.webdriver.enabled", False)
+            firefox_options.set_preference("useAutomationExtension", False)
+
+            # Performance optimizations
+            firefox_options.set_preference("browser.cache.disk.enable", False)
+            firefox_options.set_preference("browser.cache.memory.enable", False)
+
+            # Use Firefox snap browser and GeckoDriver
+            firefox_options.binary_location = "/snap/bin/firefox"
+            service = Service("/usr/local/bin/geckodriver")
+
+            self.persistent_browser = webdriver.Firefox(service=service, options=firefox_options)
             
             # Set timeouts
             self.persistent_browser.implicitly_wait(1)
@@ -171,7 +167,7 @@ class MessengerBrowserManager:
                 self.persistent_browser = None
             return False
     
-    def get_persistent_browser(self) -> webdriver.Chrome:
+    def get_persistent_browser(self) -> webdriver.Firefox:
         """Get the persistent browser, ensuring it's ready for use"""
         logger.debug(f"🔍 Checking persistent browser - browser exists: {self.persistent_browser is not None}")
         
