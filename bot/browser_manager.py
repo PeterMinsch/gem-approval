@@ -47,7 +47,7 @@ class MessengerBrowserManager:
 
             firefox_options = Options()
             # Run in headless mode for server environment
-            firefox_options.add_argument("--headless")
+            # firefox_options.add_argument("--headless")  # Temporarily disable headless for testing
 
             # Disable notifications and automation detection
             firefox_options.set_preference("dom.webnotifications.enabled", False)
@@ -66,7 +66,7 @@ class MessengerBrowserManager:
             firefox_options.set_preference("browser.cache.memory.enable", False)
 
             # Use Firefox snap browser and GeckoDriver
-            firefox_options.binary_location = "/snap/bin/firefox"
+            # Let Firefox auto-detect binary location
             service = Service("/usr/local/bin/geckodriver")
 
             browser = webdriver.Firefox(service=service, options=firefox_options)
@@ -112,7 +112,7 @@ class MessengerBrowserManager:
 
             firefox_options = Options()
             # Run in headless mode for server environment
-            firefox_options.add_argument("--headless")
+            # firefox_options.add_argument("--headless")  # Temporarily disable headless for testing
 
             # Disable notifications and automation detection
             firefox_options.set_preference("dom.webnotifications.enabled", False)
@@ -131,7 +131,7 @@ class MessengerBrowserManager:
             firefox_options.set_preference("browser.cache.memory.enable", False)
 
             # Use Firefox snap browser and GeckoDriver
-            firefox_options.binary_location = "/snap/bin/firefox"
+            # Let Firefox auto-detect binary location
             service = Service("/usr/local/bin/geckodriver")
 
             self.persistent_browser = webdriver.Firefox(service=service, options=firefox_options)
