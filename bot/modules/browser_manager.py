@@ -280,46 +280,28 @@ class BrowserManager:
                 self.posting_driver.execute_script("return navigator.userAgent;")
                 logger.info(f"✅ Posting driver connected successfully (session: {self.posting_driver.session_id[:8]}...)")
                 
-                # Attempt authentication for posting driver
-                logger.debug(f"🔍 Checking drivers for authentication - Main driver: {self.driver is not None}, Posting driver: {self.posting_driver is not None}")
+                # Independent authentication for posting driver
+                logger.info("🔑 Setting up independent authentication for posting driver...")
+                username = os.environ.get('FACEBOOK_USERNAME')
+                password = os.environ.get('FACEBOOK_PASSWORD')
 
-                authenticated = False
+                if username and password:
+                    # Create a temporary browser manager instance to use login method
+                    temp_driver = self.posting_driver
+                    original_driver = self.driver
+                    self.driver = temp_driver  # Temporarily switch for login
 
-                # First try: Copy session cookies from main driver if available
-                if self.driver:
-                    if self._copy_session_cookies():
-                        logger.info("✅ Session cookies copied to posting driver")
-                        authenticated = True
-                    else:
-                        logger.warning("⚠️ Cookie copying failed")
-
-                # Second try: Direct login if cookie copying failed or main driver not available
-                if not authenticated:
-                    logger.info("🔑 Attempting direct login for posting driver...")
-                    username = os.environ.get('FACEBOOK_USERNAME')
-                    password = os.environ.get('FACEBOOK_PASSWORD')
-
-                    if username and password:
-                        # Create a temporary browser manager instance to use login method
-                        temp_driver = self.posting_driver
-                        original_driver = self.driver
-                        self.driver = temp_driver  # Temporarily switch for login
-
-                        try:
-                            if self.login_to_facebook(username, password):
-                                logger.info("✅ Direct login successful for posting driver")
-                                authenticated = True
-                            else:
-                                logger.warning("⚠️ Direct login failed for posting driver")
-                        finally:
-                            self.driver = original_driver  # Restore original driver
-                    else:
-                        logger.warning("⚠️ No credentials available for posting driver login")
-
-                if authenticated:
-                    logger.info("✅ Background posting Chrome driver set up successfully with authentication.")
+                    try:
+                        if self.login_to_facebook(username, password):
+                            logger.info("✅ Independent login successful for posting driver")
+                        else:
+                            logger.warning("⚠️ Independent login failed for posting driver")
+                    finally:
+                        self.driver = original_driver  # Restore original driver
                 else:
-                    logger.warning("⚠️ Background posting Chrome driver setup completed but authentication failed - manual login may be required.")
+                    logger.warning("⚠️ No credentials available for posting driver login")
+
+                logger.info("✅ Background posting Chrome driver set up successfully.")
                     
                 return self.posting_driver
                 
@@ -365,322 +347,9 @@ class BrowserManager:
             logger.debug(f"🔍 Posting driver login check failed: {e}")
             return False
     
-    def sync_posting_driver_session(self) -> bool:
-        """
-        Sync session cookies from main driver to posting driver after both are available
 
-        Returns:
-            True if sync successful, False otherwise
-        """
-        if not self.driver or not self.posting_driver:
-            logger.warning("Cannot sync sessions: one or both drivers not available")
-            return False
-
-        logger.info("🔄 Syncing session cookies to posting driver...")
-        success = self._copy_session_cookies()
-
-        if success:
-            logger.info("🎉 Session sync successful - posting driver now logged in!")
-        else:
-            logger.warning("⚠️ Session sync failed - posting driver may require manual login")
-
-        return success
-
-    def sync_main_driver_session(self) -> bool:
-        """
-        Sync session cookies from posting driver to main driver when posting driver is logged in
-
-        Returns:
-            True if sync successful, False otherwise
-        """
-        if not self.driver or not self.posting_driver:
-            logger.warning("Cannot sync sessions: one or both drivers not available")
-            return False
-
-        logger.info("🔄 Syncing session cookies from posting driver to main driver...")
-        success = self._copy_session_cookies_reverse()
-
-        if success:
-            logger.info("🎉 Reverse session sync successful - main driver now logged in!")
-            # Navigate to the group page after successful login
-            try:
-                target_url = self.config.get("POST_URL", "https://www.facebook.com/groups/5440421919361046")
-                logger.info(f"Navigating to: {target_url}")
-                self.driver.get(target_url)
-                time.sleep(3)
-                logger.info("✅ Successfully navigated to Facebook group after login")
-            except Exception as e:
-                logger.warning(f"Failed to navigate after login: {e}")
-        else:
-            logger.warning("⚠️ Reverse session sync failed - main driver still needs login")
-
-        return success
     
-    def _copy_session_cookies(self) -> bool:
-        """
-        Copy session cookies from main driver to posting driver for auto-login
-        
-        Returns:
-            True if cookies copied successfully, False otherwise
-        """
-        logger.debug("🚀 _copy_session_cookies() method started")
-        try:
-            if not self.driver or not self.posting_driver:
-                logger.warning("Cannot copy cookies: one or both drivers not available")
-                logger.debug(f"Driver states - Main: {self.driver is not None}, Posting: {self.posting_driver is not None}")
-                return False
-            
-            logger.info("🔄 Attempting to copy session cookies for auto-login...")
-            
-            # Store current main driver URL to restore later
-            main_current_url = self.driver.current_url
-            
-            # Navigate main driver to Facebook base page to get all cookies
-            if not main_current_url.startswith("https://www.facebook.com"):
-                logger.debug("Main driver not on Facebook, navigating...")
-                self.driver.get("https://www.facebook.com")
-                time.sleep(3)
-            
-            # Get all cookies from main driver
-            main_cookies = self.driver.get_cookies()
-            logger.info(f"📋 Found {len(main_cookies)} cookies in main driver")
-            
-            if len(main_cookies) == 0:
-                logger.warning("⚠️ No cookies found in main driver - user may not be logged in")
-                return False
-            
-            # Navigate posting driver to Facebook base page before adding cookies
-            self.posting_driver.get("https://www.facebook.com")
-            time.sleep(2)
-            
-            # Copy cookies to posting driver
-            copied_count = 0
-            failed_cookies = []
-            important_cookies = []
-            
-            for cookie in main_cookies:
-                try:
-                    cookie_name = cookie.get('name', 'unknown')
-                    
-                    # Track important Facebook session cookies
-                    if cookie_name in ['c_user', 'xs', 'datr', 'sb', 'fr', 'presence']:
-                        important_cookies.append(cookie_name)
-                    
-                    # Create a clean cookie dict
-                    clean_cookie = {
-                        'name': cookie_name,
-                        'value': cookie['value'],
-                        'domain': cookie.get('domain', '.facebook.com')
-                    }
-                    
-                    # Add optional fields if they exist and are valid
-                    if 'path' in cookie and cookie['path']:
-                        clean_cookie['path'] = cookie['path']
-                    if 'secure' in cookie:
-                        clean_cookie['secure'] = cookie['secure']
-                    if 'httpOnly' in cookie:
-                        clean_cookie['httpOnly'] = cookie['httpOnly']
-                    if 'expiry' in cookie and cookie['expiry'] is not None:
-                        clean_cookie['expiry'] = cookie['expiry']
-                    
-                    self.posting_driver.add_cookie(clean_cookie)
-                    copied_count += 1
-                    logger.debug(f"✅ Copied cookie: {cookie_name} (domain: {clean_cookie['domain']})")
-                    
-                except Exception as cookie_error:
-                    failed_cookies.append(cookie_name)
-                    logger.debug(f"❌ Failed to copy cookie {cookie_name}: {cookie_error}")
-            
-            logger.info(f"✅ Successfully copied {copied_count}/{len(main_cookies)} cookies")
-            logger.debug(f"🔑 Important session cookies found: {important_cookies}")
-            
-            if failed_cookies:
-                logger.warning(f"❌ Failed cookies: {', '.join(failed_cookies)}")
-                
-            # Check if critical session cookies were copied
-            if not any(cookie in important_cookies for cookie in ['c_user', 'xs']):
-                logger.warning("⚠️ Critical session cookies (c_user, xs) may be missing!")
-            
-            # Refresh the posting driver to apply cookies
-            logger.debug("🔄 Refreshing posting driver to apply cookies...")
-            self.posting_driver.refresh()
-            time.sleep(3)
-            
-            # Check if login was successful with multiple methods
-            page_source = self.posting_driver.page_source.lower()
-            current_url = self.posting_driver.current_url.lower()
-            
-            # Debug: Log key information for troubleshooting
-            logger.debug(f"🔍 Login verification - Current URL: {current_url}")
-            logger.debug(f"🔍 Page source length: {len(page_source)} characters")
-            
-            # Check for specific key indicators with detailed logging
-            login_checks = {
-                "home_in_source": "home" in page_source,
-                "newsfeed_in_source": "newsfeed" in page_source,
-                "timeline_in_source": "timeline" in page_source,
-                "profile_in_source": "profile" in page_source,
-                "navigation_menu": "navigation" in page_source and "menu" in page_source,
-                "home_in_url": "/home" in current_url,
-                "no_login_form": not ("login" in page_source and "password" in page_source and "email" in page_source)
-            }
-            
-            # Log each check result
-            for check_name, result in login_checks.items():
-                logger.debug(f"🔍 {check_name}: {result}")
-            
-            # Check for Facebook-specific logged-in elements
-            fb_logged_in_indicators = [
-                'data-testid="feed_story"' in page_source,
-                'role="main"' in page_source and 'feed' in page_source,
-                'composer' in page_source,
-                'notifications' in page_source and 'messages' in page_source,
-                current_url.startswith('https://www.facebook.com') and 'login' not in current_url
-            ]
-            
-            logger.debug(f"🔍 Facebook-specific checks: {fb_logged_in_indicators}")
-            
-            # Multiple login verification checks
-            login_indicators = list(login_checks.values()) + fb_logged_in_indicators
-            is_logged_in = any(login_indicators)
-            
-            # Additional check: look for specific login failure indicators
-            login_failure_signs = [
-                "log in to facebook" in page_source,
-                "enter your email" in page_source,
-                "enter your password" in page_source,
-                'input[name="email"]' in page_source,
-                'input[name="pass"]' in page_source,
-                "/login" in current_url
-            ]
-            
-            has_login_failure = any(login_failure_signs)
-            logger.debug(f"🔍 Login failure indicators: {login_failure_signs} -> {has_login_failure}")
-            
-            # Final determination
-            if is_logged_in and not has_login_failure:
-                logger.info("🎉 Auto-login successful - posting driver logged in!")
-                success = True
-            else:
-                logger.warning("⚠️ Cookie copy completed but login verification failed")
-                logger.debug(f"🔍 Login indicators passed: {sum(login_indicators)}/{len(login_indicators)}")
-                logger.debug(f"🔍 Login failure detected: {has_login_failure}")
-                success = False
-            
-            # Restore main driver to original URL if changed
-            if main_current_url != self.driver.current_url:
-                logger.debug("Restoring main driver to original URL...")
-                self.driver.get(main_current_url)
-            
-            return success
-                
-        except Exception as e:
-            logger.error(f"❌ Failed to copy session cookies: {e}")
-            return False
 
-    def _copy_session_cookies_reverse(self) -> bool:
-        """
-        Copy session cookies from posting driver to main driver (reverse direction)
-        Uses timeout-resistant approach to handle Chrome renderer issues.
-
-        Returns:
-            True if successful, False otherwise
-        """
-        try:
-            logger.debug("🚀 _copy_session_cookies_reverse() method started")
-
-            # Get cookies from posting driver
-            logger.info("📋 Getting cookies from posting driver...")
-            posting_cookies = self.posting_driver.get_cookies()
-
-            logger.info(f"📋 Found {len(posting_cookies)} cookies in posting driver")
-
-            if not posting_cookies:
-                logger.warning("⚠️ No cookies found in posting driver")
-                return False
-
-            # Try to navigate to Facebook with timeout protection
-            navigation_success = False
-            try:
-                logger.debug("🌐 Attempting to navigate to Facebook (with timeout protection)...")
-
-                # Set a shorter page load timeout to avoid hanging
-                original_timeout = self.driver.timeouts.page_load
-                self.driver.set_page_load_timeout(15)  # 15 second timeout
-
-                self.driver.get("https://www.facebook.com")
-                navigation_success = True
-                logger.debug("✅ Successfully navigated to Facebook")
-
-                # Restore original timeout
-                self.driver.set_page_load_timeout(original_timeout)
-
-            except Exception as nav_error:
-                logger.warning(f"⚠️ Navigation to Facebook failed: {nav_error}")
-                logger.info("🔄 Continuing with cookie copy without navigation...")
-
-                # Restore original timeout in case it was changed
-                try:
-                    self.driver.set_page_load_timeout(original_timeout)
-                except:
-                    pass
-
-            # Copy each cookie to main driver (works regardless of navigation success)
-            successful_copies = 0
-            logger.info("🍪 Copying cookies from posting driver...")
-
-            for cookie in posting_cookies:
-                try:
-                    # Filter cookies to only Facebook domains if possible
-                    if navigation_success or not cookie.get('domain') or 'facebook' in cookie.get('domain', ''):
-                        self.driver.add_cookie(cookie)
-                        logger.debug(f"✅ Copied cookie: {cookie['name']} (domain: {cookie.get('domain', 'unknown')})")
-                        successful_copies += 1
-                    else:
-                        logger.debug(f"⚠️ Skipped cookie (domain mismatch): {cookie['name']}")
-                except Exception as e:
-                    logger.debug(f"⚠️ Failed to copy cookie {cookie['name']}: {e}")
-                    continue
-
-            logger.info(f"✅ Successfully copied {successful_copies}/{len(posting_cookies)} cookies to main driver")
-
-            # If we have some cookies, try a gentle refresh (with timeout protection)
-            if successful_copies > 0:
-                try:
-                    logger.debug("🔄 Refreshing page to apply cookies...")
-                    self.driver.refresh()
-                    time.sleep(2)
-                except Exception as refresh_error:
-                    logger.warning(f"⚠️ Page refresh failed: {refresh_error}")
-
-            # Verify the login worked by checking for critical cookies
-            try:
-                main_cookies = self.driver.get_cookies()
-                main_cookie_names = [c['name'] for c in main_cookies]
-
-                critical_cookies = ['fr', 'sb', 'datr']
-                found_critical = [name for name in critical_cookies if name in main_cookie_names]
-
-                logger.debug(f"🔑 Session cookies found: {found_critical}")
-
-                # Consider it successful if we copied some cookies
-                success = successful_copies > 0 and len(found_critical) > 0
-
-                if success:
-                    logger.info("🎉 Reverse session sync successful - cookies applied!")
-                else:
-                    logger.warning("⚠️ Session sync completed but may not be fully successful")
-
-                return success
-
-            except Exception as verify_error:
-                logger.warning(f"⚠️ Cookie verification failed: {verify_error}")
-                # Still consider it successful if we copied cookies
-                return successful_copies > 0
-
-        except Exception as e:
-            logger.error(f"❌ Failed to copy session cookies in reverse: {e}")
-            return False
 
     def login_to_facebook(self, username: str, password: str) -> bool:
         """

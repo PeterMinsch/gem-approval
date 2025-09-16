@@ -1110,22 +1110,6 @@ class FacebookAICommentBot:
             self.interaction_handler = InteractionHandler(self.driver, self.config)
             self.image_handler = ImageHandler(self.driver, self.config)
             
-            # Sync session to posting driver if available
-            logger.debug(f"🔍 Session sync check - browser_manager exists: {hasattr(self, 'browser_manager')}")
-            if hasattr(self, 'browser_manager'):
-                logger.debug(f"🔍 Session sync check - posting_driver exists: {self.browser_manager.posting_driver is not None}")
-                if self.browser_manager.posting_driver:
-                    # Use proper browser_manager method for session sync
-                    logger.info("🔄 Initiating reverse session sync...")
-                    success = self.browser_manager._copy_session_cookies_reverse()
-                    if success:
-                        logger.info("🎉 Session sync successful!")
-                    else:
-                        logger.warning("⚠️ Session sync failed")
-                else:
-                    logger.debug("ℹ️ Posting driver not available for session sync")
-            else:
-                logger.debug("ℹ️ BrowserManager not available for session sync")
             
             logger.info("✅ All modules initialized successfully")
         
