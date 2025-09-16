@@ -864,23 +864,7 @@ class FacebookAICommentBot:
                         pass
                 return False
 
-    def _is_posting_driver_logged_in(self) -> bool:
-        """Check if posting driver is logged in using improved detection method"""
-        if not self.posting_driver:
-            return False
-
-        try:
-            # Use the browser_manager's improved login detection
-            return self.browser_manager.is_posting_driver_logged_in()
-        except Exception as e:
-            logger.debug(f"🔍 Posting driver login check failed: {e}")
-            return False
-
-    def _post_comment_background_continued(self):
-        """Continue the post comment background method"""
-        driver = self.posting_driver
-
-        def find_comment_box():
+            def find_comment_box():
                 elements = driver.find_elements(By.XPATH, self.config['COMMENT_BOX_XPATH'])
                 if not elements:
                     for fallback_xpath in self.config.get('COMMENT_BOX_FALLBACK_XPATHS', []):
@@ -1019,6 +1003,19 @@ class FacebookAICommentBot:
                 author_comments[name] = comment
 
         return author_comments
+
+    def _is_posting_driver_logged_in(self) -> bool:
+        """Check if posting driver is logged in using improved detection method"""
+        if not self.posting_driver:
+            return False
+
+        try:
+            # Use the browser_manager's improved login detection
+            return self.browser_manager.is_posting_driver_logged_in()
+        except Exception as e:
+            logger.debug(f"🔍 Posting driver login check failed: {e}")
+            return False
+
     def __init__(self, config=None):
         self.config = {**CONFIG, **(config or {})}
         self.driver = None
