@@ -853,8 +853,8 @@ class FacebookAICommentBot:
             driver.get(post_url)
             time.sleep(5)
             
-            # Check if we're logged in by looking for login elements
-            if "login" in driver.current_url.lower() or len(driver.find_elements(By.XPATH, "//input[@name='email']")) > 0:
+            # Check if we're logged in using improved detection method
+            if not self._is_posting_driver_logged_in():
                 logger.error(f"[POSTING THREAD] Not logged into Facebook in posting browser")
                 if comment_id:
                     try:
@@ -863,7 +863,24 @@ class FacebookAICommentBot:
                     except:
                         pass
                 return False
-            def find_comment_box():
+
+    def _is_posting_driver_logged_in(self) -> bool:
+        """Check if posting driver is logged in using improved detection method"""
+        if not self.posting_driver:
+            return False
+
+        try:
+            # Use the browser_manager's improved login detection
+            return self.browser_manager.is_posting_driver_logged_in()
+        except Exception as e:
+            logger.debug(f"🔍 Posting driver login check failed: {e}")
+            return False
+
+    def _post_comment_background_continued(self):
+        """Continue the post comment background method"""
+        driver = self.posting_driver
+
+        def find_comment_box():
                 elements = driver.find_elements(By.XPATH, self.config['COMMENT_BOX_XPATH'])
                 if not elements:
                     for fallback_xpath in self.config.get('COMMENT_BOX_FALLBACK_XPATHS', []):
