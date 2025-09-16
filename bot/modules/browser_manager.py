@@ -280,18 +280,46 @@ class BrowserManager:
                 self.posting_driver.execute_script("return navigator.userAgent;")
                 logger.info(f"✅ Posting driver connected successfully (session: {self.posting_driver.session_id[:8]}...)")
                 
-                # Copy session cookies from main driver to enable auto-login (if main driver available)
-                logger.debug(f"🔍 Checking drivers for cookie copy - Main driver: {self.driver is not None}, Posting driver: {self.posting_driver is not None}")
-                
+                # Attempt authentication for posting driver
+                logger.debug(f"🔍 Checking drivers for authentication - Main driver: {self.driver is not None}, Posting driver: {self.posting_driver is not None}")
+
+                authenticated = False
+
+                # First try: Copy session cookies from main driver if available
                 if self.driver:
                     if self._copy_session_cookies():
-                        logger.info("✅ Background posting Chrome driver set up successfully with auto-login.")
+                        logger.info("✅ Session cookies copied to posting driver")
+                        authenticated = True
                     else:
-                        logger.warning("⚠️ Cookie copying failed - check debug logs above")
-                        logger.info("✅ Background posting Chrome driver set up successfully (manual login may be required).")
+                        logger.warning("⚠️ Cookie copying failed")
+
+                # Second try: Direct login if cookie copying failed or main driver not available
+                if not authenticated:
+                    logger.info("🔑 Attempting direct login for posting driver...")
+                    username = os.environ.get('FACEBOOK_USERNAME')
+                    password = os.environ.get('FACEBOOK_PASSWORD')
+
+                    if username and password:
+                        # Create a temporary browser manager instance to use login method
+                        temp_driver = self.posting_driver
+                        original_driver = self.driver
+                        self.driver = temp_driver  # Temporarily switch for login
+
+                        try:
+                            if self.login_to_facebook(username, password):
+                                logger.info("✅ Direct login successful for posting driver")
+                                authenticated = True
+                            else:
+                                logger.warning("⚠️ Direct login failed for posting driver")
+                        finally:
+                            self.driver = original_driver  # Restore original driver
+                    else:
+                        logger.warning("⚠️ No credentials available for posting driver login")
+
+                if authenticated:
+                    logger.info("✅ Background posting Chrome driver set up successfully with authentication.")
                 else:
-                    logger.info("ℹ️ Main driver not yet available - posting driver ready for manual login or later cookie sync")
-                    logger.info("✅ Background posting Chrome driver set up successfully (manual login may be required).")
+                    logger.warning("⚠️ Background posting Chrome driver setup completed but authentication failed - manual login may be required.")
                     
                 return self.posting_driver
                 
@@ -312,8 +340,30 @@ class BrowserManager:
                 else:
                     logger.error(f"❌ Failed to setup posting driver after {MAX_RETRIES} attempts")
                     return None
-        
+
         return None
+
+    def is_posting_driver_logged_in(self) -> bool:
+        """Check if posting driver is logged in and can access Facebook"""
+        if not self.posting_driver:
+            return False
+
+        try:
+            # Store current posting driver as temp main driver for login check
+            original_driver = self.driver
+            self.driver = self.posting_driver
+
+            try:
+                # Use the same robust login verification
+                is_logged_in = self._is_fully_logged_in()
+                logger.debug(f"🔍 Posting driver login status: {is_logged_in}")
+                return is_logged_in
+            finally:
+                self.driver = original_driver
+
+        except Exception as e:
+            logger.debug(f"🔍 Posting driver login check failed: {e}")
+            return False
     
     def sync_posting_driver_session(self) -> bool:
         """

@@ -168,8 +168,34 @@ class MessengerBrowserManager:
             browser.implicitly_wait(1)
             browser.set_page_load_timeout(30)
             
-            # Test the browser
+            # Test the browser and authenticate
             browser.get("https://www.facebook.com")
+
+            # Attempt authentication for messenger browser
+            logger.info(f"🔑 Attempting authentication for messenger browser session {session_id}")
+
+            # Get credentials from environment
+            username = os.environ.get('FACEBOOK_USERNAME')
+            password = os.environ.get('FACEBOOK_PASSWORD')
+
+            if username and password:
+                # Create temporary browser manager instance for authentication
+                import sys
+                sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+                from modules.browser_manager import BrowserManager
+                temp_manager = BrowserManager({"POST_URL": "https://www.facebook.com/groups/5440421919361046"})
+                temp_manager.driver = browser
+
+                try:
+                    if temp_manager.login_to_facebook(username, password):
+                        logger.info(f"✅ Authentication successful for messenger session {session_id}")
+                    else:
+                        logger.warning(f"⚠️ Authentication failed for messenger session {session_id}")
+                except Exception as auth_error:
+                    logger.warning(f"⚠️ Authentication error for messenger session {session_id}: {auth_error}")
+            else:
+                logger.warning(f"⚠️ No credentials available for messenger session {session_id} authentication")
+
             logger.info(f"✅ Chrome browser created successfully for session {session_id}")
             return browser
             
@@ -242,15 +268,39 @@ class MessengerBrowserManager:
             self.persistent_browser.get("https://www.facebook.com")
             time.sleep(2)
             
-            # Check if login is needed
-            if "login" in self.persistent_browser.current_url.lower():
+            # Attempt automatic authentication for persistent browser
+            logger.info("🔑 Attempting authentication for persistent messenger browser...")
+
+            # Get credentials from environment
+            username = os.environ.get('FACEBOOK_USERNAME')
+            password = os.environ.get('FACEBOOK_PASSWORD')
+
+            if username and password:
+                # Create temporary browser manager instance for authentication
+                import sys
+                sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+                from modules.browser_manager import BrowserManager
+                temp_manager = BrowserManager({"POST_URL": "https://www.facebook.com/groups/5440421919361046"})
+                temp_manager.driver = self.persistent_browser
+
+                try:
+                    if temp_manager.login_to_facebook(username, password):
+                        logger.info("✅ Automatic authentication successful for persistent messenger browser")
+                        self._browser_ready = True
+                    else:
+                        logger.warning("⚠️ Automatic authentication failed for persistent messenger browser")
+                        logger.info("🔐 MANUAL LOGIN may be required for persistent browser")
+                        self._browser_ready = False
+                except Exception as auth_error:
+                    logger.warning(f"⚠️ Authentication error for persistent messenger browser: {auth_error}")
+                    logger.info("🔐 MANUAL LOGIN may be required for persistent browser")
+                    self._browser_ready = False
+            else:
+                logger.warning("⚠️ No credentials available for persistent messenger browser authentication")
                 logger.info("🔐 MANUAL LOGIN REQUIRED for persistent browser")
                 logger.info("📱 Please log into Facebook in the browser window that just opened")
                 logger.info("✅ Once logged in, the browser will stay open for all messenger automation")
                 self._browser_ready = False
-            else:
-                logger.info("✅ Already logged in!")
-                self._browser_ready = True
             
             logger.info("✅ Persistent messenger browser started successfully")
             return True
