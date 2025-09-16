@@ -8,8 +8,8 @@ import time
 import logging
 from typing import Optional
 from selenium import webdriver
-from selenium.webdriver.firefox.service import Service
-from selenium.webdriver.firefox.options import Options
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -29,11 +29,11 @@ class BrowserManager:
             config: Configuration dictionary with browser settings
         """
         self.config = config
-        self.driver: Optional[webdriver.Firefox] = None
-        self.posting_driver: Optional[webdriver.Firefox] = None
+        self.driver: Optional[webdriver.Chrome] = None
+        self.posting_driver: Optional[webdriver.Chrome] = None
         self._temp_chrome_dir: Optional[str] = None
     
-    def setup_driver(self) -> webdriver.Firefox:
+    def setup_driver(self) -> webdriver.Chrome:
         """
         Setup main Chrome driver with connection validation and retry logic
         
@@ -48,35 +48,43 @@ class BrowserManager:
         
         for attempt in range(MAX_RETRIES):
             try:
-                logger.info(f"Attempting to start Firefox driver (attempt {attempt + 1}/{MAX_RETRIES})...")
+                logger.info(f"Attempting to start Chrome driver (attempt {attempt + 1}/{MAX_RETRIES})...")
 
-                firefox_options = Options()
+                chrome_options = Options()
                 # Run in headless mode for server environment
-                # firefox_options.add_argument("--headless")  # Temporarily disable headless for testing
+                chrome_options.add_argument("--headless")
+                chrome_options.add_argument("--no-sandbox")
+                chrome_options.add_argument("--disable-dev-shm-usage")
+                chrome_options.add_argument("--disable-gpu")
+                chrome_options.add_argument("--window-size=1920,1080")
+                chrome_options.add_argument("--disable-notifications")
+                chrome_options.add_argument("--disable-popup-blocking")
+                chrome_options.add_argument("--disable-translate")
+                chrome_options.add_argument("--disable-extensions")
+                chrome_options.add_argument("--disable-web-security")
+                chrome_options.add_argument("--disable-features=VizDisplayCompositor")
 
-                # Disable notifications and automation detection
-                firefox_options.set_preference("dom.webnotifications.enabled", False)
-                firefox_options.set_preference("dom.push.enabled", False)
+                # Use the Chrome installation we found
+                chrome_options.binary_location = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
 
-                # Set window size
-                firefox_options.add_argument("--width=1920")
-                firefox_options.add_argument("--height=1080")
+                # Try to find ChromeDriver in common locations
+                chromedriver_paths = [
+                    "chromedriver.exe",  # Current directory
+                    "C:\\chromedriver\\chromedriver.exe",
+                    "C:\\tools\\chromedriver.exe"
+                ]
 
-                # Disable automation indicators
-                firefox_options.set_preference("dom.webdriver.enabled", False)
-                firefox_options.set_preference("useAutomationExtension", False)
+                service = None
+                for path in chromedriver_paths:
+                    if os.path.exists(path):
+                        service = Service(path)
+                        break
 
-                # Performance optimizations
-                firefox_options.set_preference("browser.cache.disk.enable", False)
-                firefox_options.set_preference("browser.cache.memory.enable", False)
-                firefox_options.set_preference("browser.cache.offline.enable", False)
-                firefox_options.set_preference("network.http.use-cache", False)
+                if not service:
+                    # Let Selenium try to find ChromeDriver automatically
+                    service = Service()
 
-                # Use Firefox snap browser and GeckoDriver
-                # Let Firefox auto-detect binary location
-                service = Service("/usr/local/bin/geckodriver")
-
-                self.driver = webdriver.Firefox(service=service, options=firefox_options)
+                self.driver = webdriver.Chrome(service=service, options=chrome_options)
                 # PERFORMANCE FIX: Reduced implicit wait to prevent 73-second delays
                 # Use explicit waits (WebDriverWait) for specific elements instead
                 self.driver.implicitly_wait(1)  # Reduced from 10 seconds
@@ -116,7 +124,7 @@ class BrowserManager:
                 logger.error(f"Unexpected error setting up Chrome Driver: {e}")
                 raise
     
-    def setup_posting_driver(self) -> webdriver.Firefox:
+    def setup_posting_driver(self) -> webdriver.Chrome:
         """
         Set up a second browser for posting comments with retry logic
         
@@ -149,33 +157,43 @@ class BrowserManager:
                         logger.debug(f"Failed to cleanup temp directory: {e}")
                     self._temp_chrome_dir = None
                 
-                logger.info("Setting up Firefox driver for posting...")
+                logger.info("Setting up Chrome driver for posting...")
 
-                firefox_options = Options()
+                chrome_options = Options()
                 # Run in headless mode for server environment
-                # firefox_options.add_argument("--headless")  # Temporarily disable headless for testing
+                chrome_options.add_argument("--headless")
+                chrome_options.add_argument("--no-sandbox")
+                chrome_options.add_argument("--disable-dev-shm-usage")
+                chrome_options.add_argument("--disable-gpu")
+                chrome_options.add_argument("--window-size=1920,1080")
+                chrome_options.add_argument("--disable-notifications")
+                chrome_options.add_argument("--disable-popup-blocking")
+                chrome_options.add_argument("--disable-translate")
+                chrome_options.add_argument("--disable-extensions")
+                chrome_options.add_argument("--disable-web-security")
+                chrome_options.add_argument("--disable-features=VizDisplayCompositor")
 
-                # Disable notifications and automation detection
-                firefox_options.set_preference("dom.webnotifications.enabled", False)
-                firefox_options.set_preference("dom.push.enabled", False)
+                # Use the Chrome installation we found
+                chrome_options.binary_location = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
 
-                # Set window size
-                firefox_options.add_argument("--width=1920")
-                firefox_options.add_argument("--height=1080")
+                # Try to find ChromeDriver in common locations
+                chromedriver_paths = [
+                    "chromedriver.exe",  # Current directory
+                    "C:\\chromedriver\\chromedriver.exe",
+                    "C:\\tools\\chromedriver.exe"
+                ]
 
-                # Disable automation indicators
-                firefox_options.set_preference("dom.webdriver.enabled", False)
-                firefox_options.set_preference("useAutomationExtension", False)
+                service = None
+                for path in chromedriver_paths:
+                    if os.path.exists(path):
+                        service = Service(path)
+                        break
 
-                # Performance optimizations
-                firefox_options.set_preference("browser.cache.disk.enable", False)
-                firefox_options.set_preference("browser.cache.memory.enable", False)
+                if not service:
+                    # Let Selenium try to find ChromeDriver automatically
+                    service = Service()
 
-                # Use Firefox snap browser and GeckoDriver
-                # Let Firefox auto-detect binary location
-                service = Service("/usr/local/bin/geckodriver")
-
-                self.posting_driver = webdriver.Firefox(service=service, options=firefox_options)
+                self.posting_driver = webdriver.Chrome(service=service, options=chrome_options)
                 
                 # Test the driver and copy session cookies for auto-login
                 self.posting_driver.get("https://www.facebook.com")
