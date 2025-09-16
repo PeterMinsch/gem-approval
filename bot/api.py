@@ -892,13 +892,13 @@ def run_bot_with_queuing(bot_instance: FacebookAICommentBot, max_scrolls: int = 
                 if username and password:
                     if bot_instance.browser_manager.login_to_facebook(username, password):
                         logger.info("✅ Re-authentication successful, trying navigation again...")
-                        bot_instance.driver.get(target_url)
 
-                        # Check again after re-auth
-                        if "login" in bot_instance.driver.current_url.lower():
-                            logger.error("❌ Still on login page after re-authentication")
+                        # Test group access directly instead of just URL check
+                        if bot_instance.browser_manager._can_access_group(target_url):
+                            logger.info("✅ Successfully gained group access after re-authentication")
                         else:
-                            logger.info("✅ Successfully navigated to target after re-authentication")
+                            logger.error("❌ Still cannot access group after re-authentication")
+                            logger.error("   This may indicate: insufficient permissions, private group, or blocked access")
                     else:
                         logger.error("❌ Re-authentication failed")
                 else:

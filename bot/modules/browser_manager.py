@@ -657,8 +657,14 @@ class BrowserManager:
 
             # Check if fully logged in (can access main content)
             if self._is_fully_logged_in():
-                logger.info("Already fully logged in to Facebook")
-                return True
+                logger.info("General Facebook login detected - testing group access...")
+                # Test actual group access instead of just general login
+                group_url = self.config.get("POST_URL", "https://www.facebook.com/groups/5440421919361046")
+                if self._can_access_group(group_url):
+                    logger.info("✅ Already fully logged in to Facebook with group access")
+                    return True
+                else:
+                    logger.warning("⚠️ General login detected but no group access - need authentication")
 
             # Check for password re-confirmation page
             if self._is_password_reconfirmation_page():
@@ -685,18 +691,85 @@ class BrowserManager:
 
             # Not logged in if on login page
             if "login" in current_url:
+                logger.debug(f"🔍 Login check: On login page (URL: {current_url})")
                 return False
 
-            # Look for logged-in indicators
-            logged_in_indicators = [
-                "data-testid" in page_source and "nav" in page_source,
-                "home" in page_source and "profile" in page_source,
-                "newsfeed" in page_source,
-                "navigation" in page_source and "menu" in page_source
+            # Check for explicit login form elements (more reliable than page content)
+            login_form_elements = [
+                len(self.driver.find_elements(By.CSS_SELECTOR, "input[data-testid='royal-email']")) > 0,
+                len(self.driver.find_elements(By.CSS_SELECTOR, "input[data-testid='royal-pass']")) > 0,
+                len(self.driver.find_elements(By.CSS_SELECTOR, "button[data-testid='royal-login-button']")) > 0,
+                len(self.driver.find_elements(By.NAME, "email")) > 0 and len(self.driver.find_elements(By.NAME, "pass")) > 0
             ]
 
-            return any(logged_in_indicators)
-        except:
+            if any(login_form_elements):
+                logger.debug("🔍 Login check: Login form elements detected")
+                return False
+
+            # Look for logged-in indicators (improved detection)
+            logged_in_indicators = [
+                "data-testid" in page_source and ("nav" in page_source or "navigation" in page_source),
+                '"profile"' in page_source or '"home"' in page_source,
+                "newsfeed" in page_source or "feed" in page_source,
+                '"notifications"' in page_source and '"messages"' in page_source,
+                "facebook.com" in current_url and "checkpoint" not in current_url and "help" not in current_url
+            ]
+
+            is_logged_in = any(logged_in_indicators)
+            logger.debug(f"🔍 Login check: Logged-in indicators: {logged_in_indicators}, Result: {is_logged_in}")
+            return is_logged_in
+        except Exception as e:
+            logger.debug(f"🔍 Login check failed: {e}")
+            return False
+
+    def _can_access_group(self, group_url: str) -> bool:
+        """Test if we can actually access the target group (more reliable than general login check)"""
+        try:
+            logger.info(f"🔍 Testing group access: {group_url}")
+
+            # Store current URL to restore later
+            original_url = self.driver.current_url
+
+            # Try to access the group
+            self.driver.get(group_url)
+            time.sleep(3)
+
+            current_url = self.driver.current_url.lower()
+            page_source = self.driver.page_source.lower()
+
+            # Check if redirected to login
+            if "login" in current_url:
+                logger.info("❌ Group access test: Redirected to login")
+                return False
+
+            # Check for group-specific indicators
+            group_access_indicators = [
+                "/groups/" in current_url and "login" not in current_url,
+                "group" in page_source and ("post" in page_source or "member" in page_source),
+                "data-testid" in page_source and "feed" in page_source,
+                "compose" in page_source or "write something" in page_source.replace(" ", ""),
+                "share" in page_source and "comment" in page_source
+            ]
+
+            # Check for access denial indicators
+            access_denied_indicators = [
+                "join group" in page_source,
+                "request to join" in page_source,
+                "group is private" in page_source,
+                "not authorized" in page_source,
+                "blocked" in page_source
+            ]
+
+            has_access = any(group_access_indicators) and not any(access_denied_indicators)
+
+            logger.info(f"🔍 Group access indicators: {group_access_indicators}")
+            logger.info(f"🔍 Access denied indicators: {access_denied_indicators}")
+            logger.info(f"🔍 Group access result: {has_access}")
+
+            return has_access
+
+        except Exception as e:
+            logger.error(f"❌ Group access test failed: {e}")
             return False
 
     def _is_password_reconfirmation_page(self) -> bool:
