@@ -625,110 +625,66 @@ class FacebookAICommentBot:
     def start_posting_thread(self):
         """Start a background thread to post comments from the queue."""
         self.posting_queue = queue.Queue()
-        
-        # Setup posting driver for image posting
-        logger.info("Setting up dedicated posting driver for image uploads...")
+
+        # Setup dedicated posting driver (separate browser instance)
+        logger.info("Setting up dedicated posting driver...")
         self.setup_posting_driver()
-        
-        # Initialize window manager after driver is setup
-        # Will be initialized in the worker thread when driver is available
-        self.posting_manager = None
-        
+
         self.posting_thread = threading.Thread(target=self._posting_worker, daemon=True)
         self.posting_thread.start()
         logger.info("Background posting thread started.")
 
     def _posting_worker(self):
-        """Optimized worker function for the posting thread."""
-        # Wait for main driver to be available with shorter polling
-        retry_count = 0
-        while retry_count < 30:  # Try for up to 30 seconds
-            if hasattr(self, 'driver') and self.driver:
-                # Initialize window manager once driver is available
-                try:
-                    from posting_window_manager import WindowPostingManager
-                    self.posting_manager = WindowPostingManager(self.driver, self.config)
-                    logger.info("[POSTING THREAD] Window-based posting manager initialized successfully")
-                    break
-                except Exception as e:
-                    logger.error(f"[POSTING THREAD] Failed to initialize posting manager: {e}")
-                    self.posting_manager = None
-                    break
-            else:
-                time.sleep(0.5)  # Reduced from 1s to 0.5s for faster startup
-                retry_count += 1
-                
-        if not self.posting_manager:
-            logger.warning("[POSTING THREAD] Running without window manager - using fallback method")
-            
+        """Simplified worker function using only posting driver."""
         # Track posting timing for optimization
         self._posting_stats = {'total_posts': 0, 'avg_time': 0, 'failures': 0}
-        
+
         while True:
             try:
                 # Handle multiple formats: (post_url, comment), (post_url, comment, comment_id), (post_url, comment, comment_id, images)
                 queue_item = self.posting_queue.get(timeout=1)  # Non-blocking with timeout
-                
+
                 start_time = time.time()
                 success = False
-                images = None
-                
+
                 if len(queue_item) == 4:
-                    # New format with images
+                    # Format with images
                     post_url, comment, comment_id, images = queue_item
                     logger.info(f"[POSTING THREAD] Posting comment {comment_id} with {len(images) if images else 0} images to: {post_url[:50]}...")
-                    
-                    # Check if image posting is enabled and we have images
+
                     if images and self.config.get('ENABLE_IMAGE_POSTING', False):
                         logger.info(f"[POSTING THREAD] 🖼️ Image posting enabled, attaching {len(images)} images")
                         success = self.post_comment_with_image_background(post_url, comment, comment_id, images)
-                    elif images and not self.config.get('ENABLE_IMAGE_POSTING', False):
-                        logger.warning(f"[POSTING THREAD] ⚠️ Images provided but image posting disabled, posting text only")
-                        if hasattr(self, 'posting_manager') and self.posting_manager:
-                            success = self.posting_manager.post_comment(post_url, comment, comment_id)
-                        else:
-                            success = self._post_comment_background(post_url, comment, comment_id)
-                    elif hasattr(self, 'posting_manager') and self.posting_manager:
-                        # Fallback to window manager without images (for now)
-                        success = self.posting_manager.post_comment(post_url, comment, comment_id)
                     else:
+                        if images:
+                            logger.warning(f"[POSTING THREAD] ⚠️ Images provided but image posting disabled, posting text only")
                         success = self._post_comment_background(post_url, comment, comment_id)
-                        
+
                 elif len(queue_item) == 3:
                     post_url, comment, comment_id = queue_item
                     logger.info(f"[POSTING THREAD] Posting comment {comment_id} to: {post_url[:50]}...")
-                    
-                    # Use optimized window manager if available
-                    if hasattr(self, 'posting_manager') and self.posting_manager:
-                        success = self.posting_manager.post_comment(post_url, comment, comment_id)
-                    else:
-                        success = self._post_comment_background(post_url, comment, comment_id)
-                        
+                    success = self._post_comment_background(post_url, comment, comment_id)
+
                 elif len(queue_item) == 2:
                     post_url, comment = queue_item
                     comment_id = None
                     logger.info(f"[POSTING THREAD] Posting comment to: {post_url[:50]}...")
-                    
-                    # Use optimized window manager if available
-                    if hasattr(self, 'posting_manager') and self.posting_manager:
-                        success = self.posting_manager.post_comment(post_url, comment, comment_id)
-                    else:
-                        success = self._post_comment_background(post_url, comment, comment_id)
+                    success = self._post_comment_background(post_url, comment, comment_id)
                 else:
                     logger.error(f"[POSTING THREAD] Invalid queue item format: {queue_item}")
                     success = False
-                
+
                 # Track performance metrics
                 posting_time = time.time() - start_time
                 self._update_posting_stats(posting_time, success)
-                
+
                 if success:
                     logger.info(f"[POSTING THREAD] ✅ Comment posted in {posting_time:.2f}s")
                 else:
                     logger.error(f"[POSTING THREAD] ❌ Comment failed after {posting_time:.2f}s")
-                
+
                 self.posting_queue.task_done()
-                
+
             except queue.Empty:
                 # Queue timeout - allows thread to remain responsive
                 continue
