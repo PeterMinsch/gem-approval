@@ -152,6 +152,12 @@ class BrowserManager:
                 chrome_options.add_argument("--disable-web-security")
                 chrome_options.add_argument("--disable-features=VizDisplayCompositor")
 
+                # Configure user data directory for main browser (persistent sessions)
+                chrome_data_dir = os.path.join(os.getcwd(), "chrome_data")
+                chrome_options.add_argument(f"--user-data-dir={chrome_data_dir}")
+                chrome_options.add_argument("--profile-directory=Default")
+                logger.info(f"Main browser using user data directory: {chrome_data_dir}")
+
                 # Auto-detect Chrome binary based on OS
                 chrome_binary = self._find_chrome_binary()
                 if chrome_binary:
@@ -255,6 +261,15 @@ class BrowserManager:
                 chrome_options.add_argument("--disable-extensions")
                 chrome_options.add_argument("--disable-web-security")
                 chrome_options.add_argument("--disable-features=VizDisplayCompositor")
+
+                # Configure separate user data directory for posting browser
+                import uuid
+                unique_id = uuid.uuid4().hex[:8]
+                self._temp_chrome_dir = os.path.join(os.getcwd(), f"chrome_posting_temp_{unique_id}")
+                os.makedirs(self._temp_chrome_dir, exist_ok=True)
+                chrome_options.add_argument(f"--user-data-dir={self._temp_chrome_dir}")
+                chrome_options.add_argument("--profile-directory=Default")
+                logger.info(f"Posting browser using isolated user data directory: {self._temp_chrome_dir}")
 
                 # Auto-detect Chrome binary based on OS
                 chrome_binary = self._find_chrome_binary()
@@ -733,10 +748,21 @@ class BrowserManager:
         if self._temp_chrome_dir and os.path.exists(self._temp_chrome_dir):
             try:
                 import shutil
-                shutil.rmtree(self._temp_chrome_dir)
-                logger.debug(f"Cleaned up temp directory: {self._temp_chrome_dir}")
+                import time
+                # Force cleanup with retry logic for Windows file locks
+                for attempt in range(3):
+                    try:
+                        shutil.rmtree(self._temp_chrome_dir)
+                        logger.info(f"✅ Cleaned up posting browser temp directory: {self._temp_chrome_dir}")
+                        break
+                    except PermissionError as e:
+                        if attempt < 2:
+                            logger.debug(f"Retrying temp directory cleanup (attempt {attempt + 1}): {e}")
+                            time.sleep(1)
+                        else:
+                            logger.warning(f"⚠️ Could not fully cleanup temp directory: {e}")
             except Exception as e:
-                logger.debug(f"Failed to cleanup temp directory: {e}")
+                logger.warning(f"⚠️ Failed to cleanup temp directory: {e}")
             self._temp_chrome_dir = None
     
     def is_driver_healthy(self) -> bool:
