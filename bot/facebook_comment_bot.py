@@ -626,9 +626,13 @@ class FacebookAICommentBot:
         """Start a background thread to post comments from the queue."""
         self.posting_queue = queue.Queue()
 
-        # Setup dedicated posting driver (separate browser instance)
-        logger.info("Setting up dedicated posting driver...")
-        self.setup_posting_driver()
+        # Only setup posting driver if main browser exists
+        if hasattr(self, 'driver') and self.driver:
+            logger.info("Setting up dedicated posting driver...")
+            self.setup_posting_driver()
+        else:
+            logger.info("Deferring posting driver setup until main browser ready...")
+            self.posting_driver = None
 
         self.posting_thread = threading.Thread(target=self._posting_worker, daemon=True)
         self.posting_thread.start()
@@ -641,6 +645,11 @@ class FacebookAICommentBot:
 
         while True:
             try:
+                # If posting driver not available, try to set it up (deferred setup)
+                if not self.posting_driver and hasattr(self, 'driver') and self.driver:
+                    logger.info("[POSTING THREAD] Setting up deferred posting driver...")
+                    self.setup_posting_driver()
+
                 # Handle multiple formats: (post_url, comment), (post_url, comment, comment_id), (post_url, comment, comment_id, images)
                 queue_item = self.posting_queue.get(timeout=1)  # Non-blocking with timeout
 

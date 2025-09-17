@@ -608,11 +608,6 @@ def run_bot_with_queuing(bot_instance: FacebookAICommentBot, max_scrolls: int = 
     global bot_status
     
     try:
-        # 🚀 CRITICAL: Start the posting thread for real-time posting
-        logger.info("🚀 Starting posting thread for real-time comment posting...")
-        bot_instance.start_posting_thread()
-        logger.info("✅ Posting thread started successfully")
-        
         # 🔄 Process any pending approvals that were queued during initialization
         logger.info("🔄 Processing any pending approvals...")
         process_pending_approvals()
@@ -873,7 +868,12 @@ def run_bot_with_queuing(bot_instance: FacebookAICommentBot, max_scrolls: int = 
             logger.info("Setting up Chrome driver...")
             bot_instance.setup_driver()
             logger.info("Chrome browser opened successfully")
-            
+
+            # 🚀 CRITICAL: Start the posting thread AFTER main browser is ready
+            logger.info("🚀 Starting posting thread for real-time comment posting...")
+            bot_instance.start_posting_thread()
+            logger.info("✅ Posting thread started successfully")
+
             # Navigate to the target Facebook group or specific post
             target_url = bot_instance.config.get("POST_URL", "https://www.facebook.com/groups/5440421919361046")
             logger.info(f"Navigating to: {target_url}")
