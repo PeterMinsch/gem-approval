@@ -418,8 +418,18 @@ def post_comment_realtime(comment_id: str, post_url: str, comment_text: str, ima
         try:
             # Check if posting infrastructure is available
             if not hasattr(bot_instance, 'posting_queue'):
-                logger.error("❌ Posting queue not available - bot may not be fully initialized")
-                return False
+                logger.warning("⚠️ Posting queue not ready - attempting to initialize posting thread...")
+                # Try to start posting thread early if needed
+                if hasattr(bot_instance, 'start_posting_thread'):
+                    bot_instance.start_posting_thread()
+                    if hasattr(bot_instance, 'posting_queue'):
+                        logger.info("✅ Successfully initialized posting queue")
+                    else:
+                        logger.error("❌ Failed to initialize posting queue")
+                        return False
+                else:
+                    logger.error("❌ Bot not properly initialized")
+                    return False
             
             # Add to the posting queue with comment ID and images for tracking
             # Format: (post_url, comment_text, comment_id, images)

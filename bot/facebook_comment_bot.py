@@ -624,7 +624,12 @@ class FacebookAICommentBot:
 
     def start_posting_thread(self):
         """Start a background thread to post comments from the queue."""
-        self.posting_queue = queue.Queue()
+        # Prevent duplicate thread creation
+        if self.posting_thread and self.posting_thread.is_alive():
+            logger.info("Posting thread already running")
+            return
+
+        # Queue already exists from __init__, just start the worker
 
         # Only setup posting driver if main browser exists
         if hasattr(self, 'driver') and self.driver:
@@ -998,6 +1003,12 @@ class FacebookAICommentBot:
         self.queue_manager = QueueManager(self.config, database=db)
         self.image_handler = None  # Will be initialized after driver setup
         self.safety_monitor = SafetyMonitor(self.config)
+
+        # Initialize posting infrastructure early (for immediate comment approvals)
+        import queue
+        self.posting_queue = queue.Queue()
+        self.posting_thread = None
+        self.posting_driver = None
 
     def already_commented(self, existing_comments: List[str]) -> bool:
         """Check if Bravo already commented on this post"""
