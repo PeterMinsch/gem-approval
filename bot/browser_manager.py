@@ -62,12 +62,11 @@ class MessengerBrowserManager:
             chrome_options.add_argument("--log-level=3")
             chrome_options.add_argument("--silent")
             
-            # Use a separate profile directory EXACTLY like your posting driver
-            import uuid
-            unique_id = str(uuid.uuid4())[:8]
-            user_data_dir = os.path.join(os.getcwd(), f"chrome_posting_temp_{unique_id}")
+            # Use persistent profile directory to maintain login sessions
+            user_data_dir = os.path.join(os.getcwd(), "chrome_persistent_messenger")
+            os.makedirs(user_data_dir, exist_ok=True)
             chrome_options.add_argument(f"--user-data-dir={user_data_dir}")
-            chrome_options.add_argument(f"--profile-directory=PostingProfile")
+            chrome_options.add_argument(f"--profile-directory=MessengerProfile")
             
             service = Service(ChromeDriverManager().install())
             browser = webdriver.Chrome(service=service, options=chrome_options)

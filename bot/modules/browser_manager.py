@@ -149,16 +149,7 @@ class BrowserManager:
                         pass
                     self.posting_driver = None
                     
-                # Clean up any existing temp directory
-                if self._temp_chrome_dir:
-                    try:
-                        import shutil
-                        if os.path.exists(self._temp_chrome_dir):
-                            shutil.rmtree(self._temp_chrome_dir)
-                            logger.debug(f"Cleaned up temp directory: {self._temp_chrome_dir}")
-                    except Exception as e:
-                        logger.debug(f"Failed to cleanup temp directory: {e}")
-                    self._temp_chrome_dir = None
+                # Note: No cleanup of persistent profile directory - we want to keep login sessions
                 
                 logger.info("Setting up Chrome driver for posting...")
                 
@@ -186,7 +177,8 @@ class BrowserManager:
                 # Use different remote debugging port to avoid conflicts
                 chrome_options.add_argument("--remote-debugging-port=9223")
                 
-                self._temp_chrome_dir = user_data_dir
+                # Store persistent profile path for reference
+                self._persistent_chrome_dir = user_data_dir
                 
                 service = Service(ChromeDriverManager().install())
                 self.posting_driver = webdriver.Chrome(service=service, options=chrome_options)
