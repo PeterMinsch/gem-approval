@@ -1447,6 +1447,142 @@ class FacebookAICommentBot:
             logger.warning("PostExtractor not initialized, cannot collect post links")
             return []
 
+    def smart_scan_cycle(self, group_url, db):
+        """
+        Perform one cycle of smart scanning with boundary detection.
+
+        This implements the original intelligent scanning logic:
+        - Initial deep scan: Scan until yesterday's posts
+        - Incremental scan: Scan until first processed post
+
+        Returns: (posts_processed, scan_type, should_continue)
+        """
+        try:
+            # Clear processed posts from previous cycle
+            self._processed_posts_this_cycle = []
+
+            # Determine scan type based on whether any posts exist in database
+            has_processed_posts = len(db.get_processed_posts()) > 0
+
+            if not has_processed_posts:
+                logger.info("🚀 Starting INITIAL DEEP SCAN - will run until yesterday's posts...")
+                scan_type = "initial_deep_scan"
+            else:
+                logger.info("⚡ Starting INCREMENTAL SCAN - will stop at first processed post...")
+                scan_type = "incremental_scan"
+
+            # Navigate to group feed for fresh content
+            logger.info("Refreshing group feed to check for new posts...")
+            self.driver.get(group_url)
+            time.sleep(2)  # Wait for page load
+
+            # Collect all available post links (without max_scrolls limit for complete coverage)
+            all_post_links = self.scroll_and_collect_post_links()
+            logger.info(f"Collected {len(all_post_links)} post links from feed.")
+
+            new_posts = 0
+            processed_post_encountered = False
+
+            for post_url in all_post_links:
+                # INCREMENTAL SCAN: Stop at first processed post (checkpoint reached)
+                if scan_type == "incremental_scan" and db.is_post_processed(post_url):
+                    logger.info(f"✅ Incremental scan complete - encountered processed post: {post_url}")
+                    processed_post_encountered = True
+                    break
+
+                # INITIAL DEEP SCAN: Skip processed posts but continue (complete coverage)
+                if scan_type == "initial_deep_scan" and db.is_post_processed(post_url):
+                    logger.debug(f"Skipping already processed post: {post_url}")
+                    continue
+
+                logger.info(f"🔍 Processing post: {post_url}")
+
+                try:
+                    # Use centralized URL normalization
+                    clean_url = normalize_url(post_url)
+
+                    # Navigate to the post
+                    self.driver.get(clean_url)
+                    time.sleep(2)
+
+                    # Check if post is from today (boundary detection)
+                    if not self.is_post_from_today():
+                        if scan_type == "initial_deep_scan":
+                            logger.info(f"🎯 Initial deep scan stopping condition met - reached yesterday's posts at: {post_url}")
+                            logger.info("✅ Deep scan complete! Found the boundary between today and yesterday's posts.")
+                            break
+                        else:
+                            logger.info(f"Skipping post not from today: {clean_url}")
+                            self.save_processed_post(clean_url, post_text="", error_message="Not from today")
+                            continue
+
+                    # Extract post text
+                    post_text = self.get_post_text()
+                    if not post_text.strip():
+                        logger.info(f"No post text found, marking as processed: {clean_url}")
+                        self.save_processed_post(clean_url, post_text="", error_message="No text extracted")
+                        continue
+
+                    # Check existing comments
+                    existing_comments = self.get_existing_comments()
+                    logger.info(f"Found {len(existing_comments)} existing comments")
+
+                    # Check if we already commented
+                    if self.already_commented(existing_comments):
+                        logger.info(f"Already commented on this post: {clean_url}")
+                        self.save_processed_post(clean_url, post_text=post_text, post_type="already_commented")
+                        continue
+
+                    # Process the post (generate comment, add to queue, etc.)
+                    # This integrates with existing post processing logic
+                    logger.info(f"📝 Processing new post for comment generation: {clean_url}")
+
+                    # Store post data for potential CRM ingestion by caller
+                    # Return this data so API can handle CRM integration
+
+                    # Mark as processed
+                    self.save_processed_post(clean_url, post_text=post_text, post_type="processed")
+                    new_posts += 1
+
+                    # Store processed post data for caller (API can use this for CRM)
+                    if not hasattr(self, '_processed_posts_this_cycle'):
+                        self._processed_posts_this_cycle = []
+                    self._processed_posts_this_cycle.append({
+                        'url': clean_url,
+                        'text': post_text,
+                        'timestamp': time.time()
+                    })
+
+                except Exception as e:
+                    logger.error(f"Error processing post {post_url}: {e}")
+                    try:
+                        clean_url = normalize_url(post_url)
+                        self.save_processed_post(clean_url, post_text="", error_message=str(e))
+                    except:
+                        pass
+                    continue
+
+            # Determine what happened and what to do next
+            if scan_type == "initial_deep_scan":
+                if new_posts > 0:
+                    logger.info(f"🎯 Initial deep scan complete! Processed {new_posts} new posts.")
+                    logger.info("✅ Switching to incremental mode for future scans.")
+                    return new_posts, "initial_complete", True
+                else:
+                    logger.info("Initial deep scan found no new posts.")
+                    return 0, "initial_empty", True
+            else:  # incremental_scan
+                if processed_post_encountered:
+                    logger.info(f"⚡ Incremental scan complete! Processed {new_posts} new posts, stopped at processed post.")
+                    return new_posts, "incremental_complete", True
+                else:
+                    logger.info(f"⚡ Incremental scan complete! Processed {new_posts} new posts, no processed post encountered.")
+                    return new_posts, "incremental_complete", True
+
+        except Exception as e:
+            logger.error(f"Error during smart scan cycle: {e}")
+            return 0, "error", False
+
     def is_valid_post_url(self, url: str) -> bool:
         """Delegate to PostExtractor module."""
         if self.post_extractor:

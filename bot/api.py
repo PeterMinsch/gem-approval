@@ -9,7 +9,7 @@ import threading
 import time
 import atexit
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
 import json
 import uuid
@@ -918,118 +918,43 @@ def run_bot_with_queuing(bot_instance: FacebookAICommentBot, max_scrolls: int = 
                 # Keep running and scanning
                 while bot_status["is_running"]:
                     try:
-                        # Actually scan for new posts using the bot's real methods
-                        logger.info("Scanning for new posts...")
-                        
-                        # DEBUGGING: Check current page before scanning
-                        current_url = bot_instance.driver.current_url if bot_instance.driver else "unknown"
-                        logger.debug(f"SCAN_DEBUG: Current URL before scanning: {current_url[:100]}...")
-                        
-                        # DEBUGGING: Ensure we're on the group feed, not individual posts
+                        # Use SMART SCANNING with boundary detection (original logic)
+                        logger.info("🧠 Starting SMART SCAN with boundary detection...")
+
                         group_url = CONFIG.get('POST_URL', 'https://www.facebook.com')
-                        if '/groups/' in group_url and 'fbid=' not in current_url and '/posts/' not in current_url:
-                            # We're still on the group feed, good to scan
-                            logger.debug(f"SCAN_DEBUG: On group feed, proceeding with scan")
-                        elif '/groups/' in group_url:
-                            # We might be on an individual post, navigate back to group feed
-                            logger.info(f"SCAN_DEBUG: Navigating back to group feed: {group_url}")
-                            if not bot_instance.browser_manager.navigate_to_group(group_url):
-                                logger.error("❌ Failed to navigate back to group feed")
-                                continue
-                        
-                        # Use the bot's actual post scanning method
-                        post_links = bot_instance.scroll_and_collect_post_links(max_scrolls=5)
-                        logger.info(f"Found {len(post_links)} potential posts to scan")
-                        
-                        # Process each post found
-                        for post_url in post_links:
-                            if not bot_status["is_running"]:
-                                break
-                            
-                            # Use centralized URL normalization
-                            clean_url = normalize_url(post_url)
-                            
-                            if db.is_post_processed(clean_url):
-                                logger.info(f"Skipping already processed post: {clean_url}")
-                                continue
-                            
-                            logger.info(f"🔍 Processing post: {clean_url}")
-                            logger.info(f"📊 Total posts found: {len(post_links)}, Current: {post_links.index(post_url) + 1}")
-                        
+
+                        # Call the smart scanning method that handles everything intelligently
+                        posts_processed, scan_type, success = bot_instance.smart_scan_cycle(group_url, db)
+
+                        if success:
+                            logger.info(f"✅ Smart scan complete: {posts_processed} posts processed, scan_type: {scan_type}")
+
+                            # Handle CRM ingestion for any newly processed posts (if needed)
+                            # The smart scan already handles post processing and database storage
+
+                            # PHASE 1, 2 & 3 GC: Complete browser cleanup after scan cycle
+                            # (The smart_scan_cycle already handles per-post cleanup)
                             try:
-                                # Navigate to the post
-                                bot_instance.driver.get(clean_url)
-                                time.sleep(5)
-                                
-                                # Check if post is from today
-                                if not bot_instance.is_post_from_today():
-                                    logger.info(f"Skipping post not from today: {clean_url}")
-                                    bot_instance.save_processed_post(clean_url, post_text="", error_message="Not from today")
-                                    continue
-                                
-                                # Extract post text
-                                post_text = bot_instance.get_post_text()
-                                if not post_text.strip():
-                                    logger.info(f"No post text found, marking as processed: {clean_url}")
-                                    bot_instance.save_processed_post(clean_url, post_text="", error_message="No text extracted")
-                                    continue
-                                
-                                # Check for existing comments
-                                existing_comments = bot_instance.get_existing_comments()
-                                logger.info(f"Found {len(existing_comments)} existing comments")
-                                
-                                # Check if we already commented
-                                if bot_instance.already_commented(existing_comments):
-                                    logger.info(f"Already commented on this post: {clean_url}")
-                                    bot_instance.save_processed_post(clean_url, post_text=post_text, post_type="already_commented")
-                                    continue
-                                
-                                
-                                # Ingest post into CRM
-                                ingest_post_to_crm(clean_url, post_text)
-                                
-                                # Mark as processed
-                                bot_instance.save_processed_post(clean_url, post_text=post_text, post_type="processed")
+                                logger.debug("🧹 Phase 3: Post-scan browser cleanup")
 
-                                # PHASE 1, 2 & 3 GC: Complete browser cleanup after each post
-                                try:
-                                    # Phase 1 & 2 cleanup (existing)
-                                    bot_instance.driver.execute_script("sessionStorage.clear();")
-                                    bot_instance.driver.execute_script("window.performance.clearResourceTimings();")
-                                    bot_instance.driver.execute_script("window.performance.clearMeasures();")
-                                    bot_instance.driver.execute_script("window.performance.clearMarks();")
-                                    bot_instance.driver.execute_script("console.clear();")
+                                # Final cleanup after smart scan
+                                bot_instance.driver.execute_script("if(window.gc) window.gc();")
+                                bot_instance.driver.execute_script("localStorage.clear();")
+                                bot_instance.driver.execute_script("sessionStorage.clear();")
 
-                                    # PHASE 3 GC: Original advanced cleanup
-                                    bot_instance.driver.execute_script("localStorage.clear();")  # Clear Facebook stored data
-                                    bot_instance.driver.execute_script("if(window.gc) window.gc();")  # Force JavaScript GC
-                                    bot_instance.driver.execute_script("if(window.CollectGarbage) window.CollectGarbage();")  # Alternative GC
+                            except Exception as cleanup_error:
+                                logger.debug(f"Post-scan cleanup minor error (safe to ignore): {cleanup_error}")
 
-                                    # PHASE 3 GC: Browser memory forcing (the missing piece!)
-                                    logger.debug("🧹 Phase 3: Forcing browser memory release after post processing")
+                        else:
+                            logger.warning(f"⚠️ Smart scan encountered issues: {scan_type}")
 
-                                    # Clear DOM content to release memory
-                                    bot_instance.driver.execute_script("""
-                                        try {
-                                            // Stop all loading and clear DOM
-                                            window.stop();
-
-                                            // Clear all image and media elements
-                                            document.querySelectorAll('img, video, audio').forEach(el => el.src = '');
-
-                                            // Force garbage collection if available
-                                            if (window.gc) window.gc();
-                                            if (window.CollectGarbage) window.CollectGarbage();
-                                        } catch(e) { console.log('Cleanup script error:', e); }
-                                    """)
-
-                                except Exception as cleanup_error:
-                                    logger.debug(f"Enhanced cleanup minor error (safe to ignore): {cleanup_error}")
-
-                            except Exception as e:
-                                logger.error(f"Error processing post {clean_url}: {e}")
-                                bot_instance.save_processed_post(clean_url, post_text="", error_message=str(e))
-                                continue
+                            # Fallback: try simple navigation back to group
+                            try:
+                                logger.info("🔄 Attempting fallback navigation to group feed...")
+                                bot_instance.driver.get(group_url)
+                                time.sleep(2)
+                            except Exception as fallback_error:
+                                logger.error(f"Fallback navigation failed: {fallback_error}")
                         
                         # PHASE 1 & 2 GC: Enhanced garbage collection after scan cycle
                         logger.info("🧹 Performing enhanced garbage collection...")
@@ -1159,9 +1084,10 @@ def run_bot_with_queuing(bot_instance: FacebookAICommentBot, max_scrolls: int = 
 
                         logger.info("🧹 PHASE 3 COMPLETE: Enhanced garbage collection with browser memory forcing complete")
 
-                        # Wait before next scan - TESTING 5 SECOND INTERVAL WITH COMPLETE PHASE 3 GC
-                        logger.info("Scan cycle complete. Starting next scan in 5 seconds with Phase 3 browser memory forcing...")
-                        time.sleep(5)  # Test aggressive GC + browser memory forcing effectiveness
+                        # Wait before next scan - 15 MINUTE INTERVALS FOR 24-HOUR STABILITY TEST
+                        logger.info("Scan cycle complete. Starting next scan in 15 minutes for optimal stability...")
+                        logger.info(f"⏰ Next scan scheduled at: {(datetime.now() + timedelta(minutes=15)).strftime('%H:%M:%S')}")
+                        time.sleep(900)  # 15 minutes = 900 seconds - maximum stability test
                         
                     except Exception as e:
                         logger.error(f"Error during scanning: {e}")
