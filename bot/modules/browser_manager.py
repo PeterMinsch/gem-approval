@@ -11,6 +11,7 @@ from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import WebDriverException, TimeoutException
@@ -409,14 +410,114 @@ class BrowserManager:
             logger.error(f"❌ Failed to copy session cookies: {e}")
             return False
     
+    def _is_password_reconfirmation_page(self) -> bool:
+        """Check if current page is a password re-confirmation page"""
+        try:
+            # Look for password field with autofocus (your specific element)
+            password_fields = self.driver.find_elements(By.CSS_SELECTOR, 'input[name="pass"][autofocus="1"]')
+            if password_fields:
+                # Also check there's no email field (distinguishes from full login)
+                email_fields = self.driver.find_elements(By.CSS_SELECTOR, 'input[name="email"]')
+                if not email_fields:
+                    logger.info("🔐 Detected password re-confirmation page")
+                    return True
+            return False
+        except Exception as e:
+            logger.debug(f"Error checking password reconfirmation: {e}")
+            return False
+
+    def _is_full_login_page(self) -> bool:
+        """Check if current page is a full login page with email+password"""
+        try:
+            email_fields = self.driver.find_elements(By.CSS_SELECTOR, 'input[name="email"]')
+            password_fields = self.driver.find_elements(By.CSS_SELECTOR, 'input[name="pass"]')
+            return bool(email_fields and password_fields)
+        except Exception as e:
+            logger.debug(f"Error checking full login page: {e}")
+            return False
+
+    def _handle_password_reconfirmation(self, password: str) -> bool:
+        """Handle password re-confirmation page"""
+        try:
+            logger.info("🔐 Handling password re-confirmation...")
+
+            # Find the password field with autofocus
+            password_field = WebDriverWait(self.driver, 10).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, 'input[name="pass"][autofocus="1"]'))
+            )
+
+            # Clear and enter password
+            password_field.clear()
+            password_field.send_keys(password)
+
+            # Submit by pressing Enter
+            password_field.send_keys(Keys.RETURN)
+
+            # Wait for redirect
+            time.sleep(5)
+
+            # Check if we're no longer on login page
+            current_url = self.driver.current_url.lower()
+            if "/login" not in current_url:
+                logger.info("✅ Password re-confirmation successful")
+                return True
+            else:
+                logger.error("❌ Password re-confirmation failed")
+                return False
+
+        except Exception as e:
+            logger.error(f"❌ Error during password re-confirmation: {e}")
+            return False
+
+    def _handle_full_login(self, username: str, password: str) -> bool:
+        """Handle full login page with email and password"""
+        try:
+            logger.info("🔑 Handling full login...")
+
+            # Find and fill email field
+            email_field = WebDriverWait(self.driver, 10).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, 'input[name="email"]'))
+            )
+            email_field.clear()
+            email_field.send_keys(username)
+
+            # Find and fill password field
+            password_field = self.driver.find_element(By.CSS_SELECTOR, 'input[name="pass"]')
+            password_field.clear()
+            password_field.send_keys(password)
+
+            # Try to find and click login button, or use Enter
+            try:
+                login_button = self.driver.find_element(By.NAME, "login")
+                login_button.click()
+            except:
+                # Fallback: press Enter on password field
+                password_field.send_keys(Keys.RETURN)
+
+            # Wait for login to complete
+            time.sleep(5)
+
+            # Check if login was successful
+            current_url = self.driver.current_url.lower()
+            if "/login" not in current_url:
+                logger.info("✅ Full login successful")
+                return True
+            else:
+                logger.error("❌ Full login failed")
+                return False
+
+        except Exception as e:
+            logger.error(f"❌ Error during full login: {e}")
+            return False
+
     def login_to_facebook(self, username: str, password: str) -> bool:
         """
-        Login to Facebook using provided credentials
-        
+        Enhanced login to Facebook with support for both full login and password re-confirmation
+
         Args:
             username: Facebook username/email
             password: Facebook password
-            
+
         Returns:
             True if login successful, False otherwise
         """
@@ -424,37 +525,22 @@ class BrowserManager:
             logger.info("Navigating to Facebook login page...")
             self.driver.get("https://www.facebook.com")
             time.sleep(2)
-            
-            # Check if already logged in
-            if "login" not in self.driver.current_url.lower():
+
+            # Check what type of page we're on
+            current_url = self.driver.current_url.lower()
+
+            # Check if already fully logged in
+            if "/login" not in current_url:
                 logger.info("Already logged in to Facebook")
                 return True
-            
-            # Find and fill email field
-            email_field = WebDriverWait(self.driver, 10).until(
-                EC.presence_of_element_located((By.ID, "email"))
-            )
-            email_field.clear()
-            email_field.send_keys(username)
-            
-            # Find and fill password field
-            password_field = self.driver.find_element(By.ID, "pass")
-            password_field.clear()
-            password_field.send_keys(password)
-            
-            # Click login button
-            login_button = self.driver.find_element(By.NAME, "login")
-            login_button.click()
-            
-            # Wait for login to complete
-            time.sleep(5)
-            
-            # Check if login was successful
-            if "login" not in self.driver.current_url.lower():
-                logger.info("✅ Successfully logged in to Facebook")
-                return True
+
+            # Determine what type of login page we're on
+            if self._is_password_reconfirmation_page():
+                return self._handle_password_reconfirmation(password)
+            elif self._is_full_login_page():
+                return self._handle_full_login(username, password)
             else:
-                logger.error("❌ Failed to login to Facebook")
+                logger.error("❌ Unknown login page type")
                 return False
                 
         except Exception as e:
