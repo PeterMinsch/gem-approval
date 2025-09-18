@@ -22,7 +22,14 @@ class BotDatabase:
         try:
             yield conn
         finally:
-            conn.close()
+            # PHASE 3 GC: Enhanced database connection cleanup
+            try:
+                conn.execute("PRAGMA optimize;")  # Optimize query planner
+                conn.commit()
+            except:
+                pass
+            finally:
+                conn.close()
     
     def init_database(self):
         """Initialize database tables if they don't exist"""

@@ -991,19 +991,40 @@ def run_bot_with_queuing(bot_instance: FacebookAICommentBot, max_scrolls: int = 
                                 # Mark as processed
                                 bot_instance.save_processed_post(clean_url, post_text=post_text, post_type="processed")
 
-                                # PHASE 1 & 2 GC: Browser storage and cache cleanup after each post
+                                # PHASE 1, 2 & 3 GC: Complete browser cleanup after each post
                                 try:
+                                    # Phase 1 & 2 cleanup (existing)
                                     bot_instance.driver.execute_script("sessionStorage.clear();")
                                     bot_instance.driver.execute_script("window.performance.clearResourceTimings();")
-
-                                    # PHASE 2 GC: More aggressive browser cleanup (low risk)
                                     bot_instance.driver.execute_script("window.performance.clearMeasures();")
                                     bot_instance.driver.execute_script("window.performance.clearMarks();")
-                                    # Clear console logs to free memory
                                     bot_instance.driver.execute_script("console.clear();")
 
+                                    # PHASE 3 GC: Original advanced cleanup
+                                    bot_instance.driver.execute_script("localStorage.clear();")  # Clear Facebook stored data
+                                    bot_instance.driver.execute_script("if(window.gc) window.gc();")  # Force JavaScript GC
+                                    bot_instance.driver.execute_script("if(window.CollectGarbage) window.CollectGarbage();")  # Alternative GC
+
+                                    # PHASE 3 GC: Browser memory forcing (the missing piece!)
+                                    logger.debug("🧹 Phase 3: Forcing browser memory release after post processing")
+
+                                    # Clear DOM content to release memory
+                                    bot_instance.driver.execute_script("""
+                                        try {
+                                            // Stop all loading and clear DOM
+                                            window.stop();
+
+                                            // Clear all image and media elements
+                                            document.querySelectorAll('img, video, audio').forEach(el => el.src = '');
+
+                                            // Force garbage collection if available
+                                            if (window.gc) window.gc();
+                                            if (window.CollectGarbage) window.CollectGarbage();
+                                        } catch(e) { console.log('Cleanup script error:', e); }
+                                    """)
+
                                 except Exception as cleanup_error:
-                                    logger.debug(f"Browser cleanup minor error (safe to ignore): {cleanup_error}")
+                                    logger.debug(f"Enhanced cleanup minor error (safe to ignore): {cleanup_error}")
 
                             except Exception as e:
                                 logger.error(f"Error processing post {clean_url}: {e}")
@@ -1024,42 +1045,123 @@ def run_bot_with_queuing(bot_instance: FacebookAICommentBot, max_scrolls: int = 
                             logger.debug("psutil not available for memory monitoring")
                             memory_before = 0
 
-                        # PHASE 2 GC: Additional browser cleanup at scan cycle end (low risk)
+                        # PHASE 2 & 3 GC: Complete browser memory forcing at scan cycle end
                         try:
-                            logger.debug("🧹 Phase 2: Enhanced browser cleanup at scan cycle end")
-                            # Clear any remaining browser cache
-                            bot_instance.driver.execute_script("window.performance.clearResourceTimings();")
+                            logger.info("🧹 Phase 3: AGGRESSIVE browser memory cleanup at scan cycle end")
 
-                            # Navigate back to main group page if we're on individual posts
+                            # PHASE 3: Force complete page memory release
                             current_url = bot_instance.driver.current_url
                             group_url = CONFIG.get('POST_URL', 'https://www.facebook.com')
-                            if '/posts/' in current_url or '/photo/' in current_url:
-                                logger.debug("🧹 Navigating back to group page to clear post-specific DOM")
-                                bot_instance.driver.get(group_url)
-                                time.sleep(1)  # Brief wait for page load
+
+                            # Step 1: Clear current page DOM completely
+                            bot_instance.driver.execute_script("""
+                                try {
+                                    console.log('Starting aggressive memory cleanup...');
+
+                                    // Stop all network activity
+                                    window.stop();
+
+                                    // Clear all elements with heavy memory usage
+                                    document.querySelectorAll('img, video, audio, iframe, canvas').forEach(el => {
+                                        if (el.src) el.src = '';
+                                        if (el.srcset) el.srcset = '';
+                                        if (el.remove) el.remove();
+                                    });
+
+                                    // Clear service worker caches
+                                    if ('caches' in window) {
+                                        caches.keys().then(names => {
+                                            names.forEach(name => caches.delete(name));
+                                        });
+                                    }
+
+                                    // Force multiple garbage collection passes
+                                    for (let i = 0; i < 3; i++) {
+                                        if (window.gc) window.gc();
+                                        if (window.CollectGarbage) window.CollectGarbage();
+                                    }
+
+                                    console.log('Aggressive cleanup complete');
+                                } catch(e) {
+                                    console.log('Cleanup script error:', e);
+                                }
+                            """)
+
+                            # Step 2: Navigate to minimal page to force memory release
+                            logger.debug("🧹 Phase 3: Navigate to minimal page to force memory release")
+                            minimal_page = "data:text/html,<html><head><title>Cleaning</title></head><body style='margin:0;padding:20px;font-family:Arial;'>🧹 Memory cleanup in progress...</body></html>"
+                            bot_instance.driver.get(minimal_page)
+                            time.sleep(2)  # Give Chrome time to release previous page memory
+
+                            # Step 3: Navigate back to group page with fresh memory
+                            logger.debug("🧹 Phase 3: Navigate back to group page with fresh memory")
+                            bot_instance.driver.get(group_url)
+                            time.sleep(2)  # Brief wait for page load
+
+                            # Step 4: Final cleanup on group page
+                            bot_instance.driver.execute_script("""
+                                try {
+                                    // Final cleanup pass
+                                    if (window.gc) window.gc();
+                                    window.performance.clearResourceTimings();
+                                    window.performance.clearMeasures();
+                                    window.performance.clearMarks();
+                                } catch(e) { console.log('Final cleanup error:', e); }
+                            """)
 
                         except Exception as browser_cleanup_error:
-                            logger.debug(f"Enhanced browser cleanup minor issue (safe to continue): {browser_cleanup_error}")
+                            logger.warning(f"Aggressive browser cleanup issue (continuing): {browser_cleanup_error}")
+                            # Fallback: try simple navigation
+                            try:
+                                group_url = CONFIG.get('POST_URL', 'https://www.facebook.com')
+                                bot_instance.driver.get(group_url)
+                            except:
+                                pass
 
-                        # Multiple garbage collection passes for better cleanup
+                        # PHASE 3 GC: Triple garbage collection passes with database optimization
                         import gc
-                        gc.collect()
-                        gc.collect()  # Second pass often frees more memory
 
-                        # Memory monitoring after GC (safe)
+                        # Database cleanup (Phase 3 original)
+                        try:
+                            logger.debug("🧹 Phase 3: Database connection optimization")
+                            # Force database optimization happens automatically in connection cleanup
+                        except Exception as db_error:
+                            logger.debug(f"Database cleanup minor issue: {db_error}")
+
+                        # Triple GC pass for maximum cleanup
+                        logger.debug("🧹 Phase 3: Triple garbage collection pass")
+                        for i in range(3):
+                            gc.collect()
+                            if i == 1:  # Middle pass - check intermediate memory
+                                try:
+                                    if memory_before > 0:
+                                        memory_mid = process.memory_info().rss / 1024 / 1024
+                                        freed_so_far = memory_before - memory_mid
+                                        logger.debug(f"📊 Memory after pass {i+1}: {memory_mid:.1f}MB (freed so far: {freed_so_far:.1f}MB)")
+                                except:
+                                    pass
+
+                        # Final memory monitoring after complete Phase 3 GC
                         try:
                             if memory_before > 0:
                                 memory_after = process.memory_info().rss / 1024 / 1024  # MB
                                 memory_freed = memory_before - memory_after
-                                logger.info(f"📊 Memory after GC: {memory_after:.1f}MB (freed: {memory_freed:.1f}MB)")
+                                logger.info(f"📊 FINAL Memory after Phase 3 GC: {memory_after:.1f}MB (freed: {memory_freed:.1f}MB)")
+
+                                # Calculate efficiency
+                                if memory_freed > 0:
+                                    efficiency = (memory_freed / memory_before) * 100
+                                    logger.info(f"🎯 Phase 3 GC Efficiency: {efficiency:.1f}% memory reduction")
+                                else:
+                                    logger.warning("⚠️ No memory freed - may need browser restart strategy")
                         except:
                             pass
 
-                        logger.info("🧹 Enhanced garbage collection complete")
+                        logger.info("🧹 PHASE 3 COMPLETE: Enhanced garbage collection with browser memory forcing complete")
 
-                        # Wait before next scan - TESTING 5 SECOND INTERVAL WITH PHASE 1 GC
-                        logger.info("Scan cycle complete. Starting next scan in 5 seconds...")
-                        time.sleep(5)  # Back to 5 seconds to test GC effectiveness
+                        # Wait before next scan - TESTING 5 SECOND INTERVAL WITH COMPLETE PHASE 3 GC
+                        logger.info("Scan cycle complete. Starting next scan in 5 seconds with Phase 3 browser memory forcing...")
+                        time.sleep(5)  # Test aggressive GC + browser memory forcing effectiveness
                         
                     except Exception as e:
                         logger.error(f"Error during scanning: {e}")
