@@ -68,6 +68,11 @@ class BrowserManager:
                 chrome_options.add_argument("--log-level=3")
                 chrome_options.add_argument("--silent")
 
+                # Safe memory optimization flags for low-RAM server (main browser)
+                chrome_options.add_argument("--disable-background-networking") # No background requests
+                chrome_options.add_argument("--disable-sync")               # No Chrome sync
+                chrome_options.add_argument("--disable-default-apps")       # No default apps
+
                 # Add Unicode/emoji handling flags
                 chrome_options.add_argument("--lang=en-US")
                 chrome_options.add_argument("--disable-features=VizDisplayCompositor")
@@ -177,6 +182,11 @@ class BrowserManager:
                 chrome_options.add_experimental_option('useAutomationExtension', False)
                 chrome_options.add_argument("--log-level=3")
                 chrome_options.add_argument("--silent")
+
+                # Safe memory optimization flags for low-RAM server (posting browser)
+                chrome_options.add_argument("--disable-background-networking") # No background requests
+                chrome_options.add_argument("--disable-sync")               # No Chrome sync
+                chrome_options.add_argument("--disable-default-apps")       # No default apps
 
                 # Add Unicode/emoji handling flags
                 chrome_options.add_argument("--lang=en-US")
