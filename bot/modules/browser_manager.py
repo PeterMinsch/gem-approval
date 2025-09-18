@@ -67,10 +67,11 @@ class BrowserManager:
                 chrome_options.add_argument("--log-level=3")
                 chrome_options.add_argument("--silent")
                 
-                # User data and profile settings
-                user_data_dir = os.path.join(os.getcwd(), "chrome_data")
+                # Use persistent profile to maintain login sessions
+                user_data_dir = os.path.join(os.getcwd(), "chrome_persistent_main")
+                os.makedirs(user_data_dir, exist_ok=True)
                 chrome_options.add_argument(f"--user-data-dir={user_data_dir}")
-                chrome_options.add_argument(f"--profile-directory={self.config.get('CHROME_PROFILE', 'Default')}")
+                chrome_options.add_argument(f"--profile-directory={self.config.get('CHROME_PROFILE', 'MainProfile')}")
                 
                 # Set window size
                 chrome_options.add_argument("--window-size=1920,1080")
