@@ -57,47 +57,71 @@ class PostExtractor:
         
         for scroll_num in range(max_scrolls):
             logger.info(f"Scroll {scroll_num + 1}/{max_scrolls}")
-            
-            # Wait for dynamic content to load
+
             try:
-                WebDriverWait(self.driver, 3).until(
-                    EC.presence_of_element_located((By.XPATH, 
-                        "//a[contains(@href, '/groups/') or contains(@href, '/photo/') or contains(@href, '/commerce/')]"))
+                # Wait for dynamic content to load
+                try:
+                    WebDriverWait(self.driver, 3).until(
+                        EC.presence_of_element_located((By.XPATH,
+                            "//a[contains(@href, '/groups/') or contains(@href, '/photo/') or contains(@href, '/commerce/')]"))
+                    )
+                except TimeoutException:
+                    logger.debug("No new elements appeared after wait")
+
+                # Collect group posts, photo posts, and commerce listings
+                post_links = self.driver.find_elements(
+                    By.XPATH,
+                    "//a[contains(@href, '/groups/') and contains(@href, '/posts/') and not(contains(@href, 'comment_id')) and string-length(@href) > 60]" +
+                    " | //a[contains(@href, '/photo/?fbid=') and contains(@href, 'set=')]" +
+                    " | //a[contains(@href, '/commerce/listing/') and string-length(@href) > 80]"
                 )
-            except TimeoutException:
-                logger.debug("No new elements appeared after wait")
-            
-            # Collect group posts, photo posts, and commerce listings
-            post_links = self.driver.find_elements(
-                By.XPATH,
-                "//a[contains(@href, '/groups/') and contains(@href, '/posts/') and not(contains(@href, 'comment_id')) and string-length(@href) > 60]" +
-                " | //a[contains(@href, '/photo/?fbid=') and contains(@href, 'set=')]" +
-                " | //a[contains(@href, '/commerce/listing/') and string-length(@href) > 80]"
-            )
-            
-            hrefs = [link.get_attribute('href') for link in post_links if link.get_attribute('href')]
-            logger.info(f"Found {len(hrefs)} post links on this scroll")
-            
-            # Filter and normalize URLs
-            valid_hrefs = []
-            for href in hrefs:
-                # Use centralized URL normalization
-                clean_href = normalize_url(href)
-                
-                if self.is_valid_post_url(clean_href) and clean_href not in collected:
-                    valid_hrefs.append(clean_href)
-            
-            if valid_hrefs:
-                empty_scroll_count = 0
-            else:
-                empty_scroll_count += 1
-                if empty_scroll_count >= max_empty_scrolls:
-                    logger.info(f"Stopping early - {max_empty_scrolls} consecutive scrolls with no new posts")
-                    break
-            
-            collected.update(valid_hrefs)
-            self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-            time.sleep(0.5)  # Reduced from 2s for faster scrolling
+
+                hrefs = []
+                for link in post_links:
+                    try:
+                        href = link.get_attribute('href')
+                        if href:
+                            hrefs.append(href)
+                    except Exception:
+                        # Skip individual stale elements
+                        continue
+
+                logger.info(f"Found {len(hrefs)} post links on this scroll")
+
+                # Filter and normalize URLs
+                valid_hrefs = []
+                for href in hrefs:
+                    # Use centralized URL normalization
+                    clean_href = normalize_url(href)
+
+                    if self.is_valid_post_url(clean_href) and clean_href not in collected:
+                        valid_hrefs.append(clean_href)
+
+                if valid_hrefs:
+                    empty_scroll_count = 0
+                else:
+                    empty_scroll_count += 1
+                    if empty_scroll_count >= max_empty_scrolls:
+                        logger.info(f"Stopping early - {max_empty_scrolls} consecutive scrolls with no new posts")
+                        break
+
+                collected.update(valid_hrefs)
+
+            except Exception as e:
+                # Handle stale element and other WebDriver exceptions
+                if 'stale element reference' in str(e).lower():
+                    logger.warning(f"Stale element error on scroll {scroll_num + 1}, continuing with next scroll...")
+                else:
+                    logger.warning(f"Error during scroll {scroll_num + 1}: {e}, continuing...")
+                # Continue with next scroll instead of breaking
+
+            try:
+                self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                time.sleep(0.5)  # Reduced from 2s for faster scrolling
+            except Exception as e:
+                logger.warning(f"Error during scroll action: {e}")
+                # Small delay before continuing
+                time.sleep(1)
         
         return list(collected)
     
