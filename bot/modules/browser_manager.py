@@ -177,10 +177,9 @@ class BrowserManager:
                 chrome_options.add_argument("--log-level=3")
                 chrome_options.add_argument("--silent")
                 
-                # Use separate profile to avoid conflicts
-                import uuid
-                unique_id = str(uuid.uuid4())[:8]
-                user_data_dir = os.path.join(os.getcwd(), f"chrome_posting_temp_{unique_id}")
+                # Use persistent profile to maintain login sessions
+                user_data_dir = os.path.join(os.getcwd(), "chrome_persistent_profile")
+                os.makedirs(user_data_dir, exist_ok=True)
                 chrome_options.add_argument(f"--user-data-dir={user_data_dir}")
                 chrome_options.add_argument(f"--profile-directory=PostingProfile")
                 
