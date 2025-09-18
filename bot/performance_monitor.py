@@ -53,7 +53,11 @@ class PerformanceMonitor:
         if operation not in self.timings:
             self.timings[operation] = []
         self.timings[operation].append(duration)
-        
+
+        # PHASE 1 GC: Limit timing data to prevent memory growth (safe)
+        if len(self.timings[operation]) > 50:
+            self.timings[operation] = self.timings[operation][-50:]  # Keep last 50 only
+
         # Log timing
         if duration > slow_threshold:
             logger.warning(f"🐌 SLOW: {operation} took {duration:.2f}s (threshold: {slow_threshold}s)")
@@ -62,6 +66,10 @@ class PerformanceMonitor:
                 'duration': duration,
                 'timestamp': datetime.now().isoformat()
             })
+
+            # PHASE 1 GC: Limit slow operations list (safe)
+            if len(self.slow_operations) > 20:
+                self.slow_operations = self.slow_operations[-20:]  # Keep last 20 only
         else:
             logger.info(f"⏱️ {operation}: {duration:.2f}s")
     

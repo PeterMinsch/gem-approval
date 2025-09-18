@@ -850,7 +850,7 @@ class FacebookAICommentBot:
         from selenium.webdriver.support import expected_conditions as EC
 
         # Request browser access for posting operation
-        if not self.browser_manager.request_browser_for_posting_sync(timeout=10):
+        if not self.browser_manager.request_browser_for_posting_sync(timeout=30):
             logger.error(f"[POSTING THREAD] Could not acquire browser for posting to {post_url}")
             if comment_id:
                 try:
@@ -863,8 +863,18 @@ class FacebookAICommentBot:
         driver = self.posting_driver
         try:
             driver.get(post_url)
-            time.sleep(5)
-            
+            # Increased wait time for memory-constrained Docker environment
+            # Allow extra time for page loading and JavaScript execution
+            time.sleep(10)
+
+            # Wait for page to be ready (additional safeguard for slow environments)
+            try:
+                WebDriverWait(driver, 15).until(
+                    lambda d: d.execute_script("return document.readyState") == "complete"
+                )
+            except TimeoutException:
+                logger.warning(f"[POSTING THREAD] Page ready state timeout for {post_url}, continuing anyway")
+
             # Check if we're logged in by looking for login elements
             if "login" in driver.current_url.lower() or len(driver.find_elements(By.XPATH, "//input[@name='email']")) > 0:
                 logger.error(f"[POSTING THREAD] Not logged into Facebook in posting browser")
@@ -889,7 +899,7 @@ class FacebookAICommentBot:
             # Wait for comment box to be present
             comment_area = None
             try:
-                comment_area = WebDriverWait(driver, 5).until(lambda d: find_comment_box())
+                comment_area = WebDriverWait(driver, 30).until(lambda d: find_comment_box())
             except TimeoutException:
                 logger.error(f"[POSTING THREAD] Could not find comment box for: {post_url}")
                 # Update database status on failure
@@ -1895,7 +1905,7 @@ class FacebookAICommentBot:
                     for selector in post_button_selectors:
                         try:
                             # Wait for button to be clickable
-                            wait = WebDriverWait(self.driver, 3)
+                            wait = WebDriverWait(self.driver, 15)
                             post_button = wait.until(
                                 EC.element_to_be_clickable((By.XPATH, selector))
                             )

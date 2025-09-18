@@ -88,6 +88,10 @@ class PostExtractor:
 
                 logger.info(f"Found {len(hrefs)} post links on this scroll")
 
+                # PHASE 1 GC: Clear WebElement references after data extraction
+                post_links.clear()
+                post_links = None
+
                 # Filter and normalize URLs
                 valid_hrefs = []
                 for href in hrefs:
@@ -122,7 +126,16 @@ class PostExtractor:
                 logger.warning(f"Error during scroll action: {e}")
                 # Small delay before continuing
                 time.sleep(1)
-        
+
+        # PHASE 2 GC: Reset scroll position and clear any scroll-accumulated DOM (low risk)
+        try:
+            logger.debug("🧹 Phase 2 GC: Resetting scroll position and clearing accumulated DOM")
+            self.driver.execute_script("window.scrollTo(0, 0);")  # Back to top
+            # Small delay to let browser settle
+            time.sleep(0.2)
+        except Exception as scroll_error:
+            logger.debug(f"Scroll reset minor issue (safe to continue): {scroll_error}")
+
         return list(collected)
     
     def is_valid_post_url(self, url: str) -> bool:
@@ -384,6 +397,14 @@ class PostExtractor:
             # Join all collected post texts
             combined_text = ' '.join(post_texts)
             logger.info(f"Extracted post text using {method_name} (stopped before comments): {combined_text[:100]}...")
+
+            # PHASE 2 GC: Clear text processing lists (low risk - data already combined)
+            try:
+                post_texts.clear()
+                post_texts = None
+            except Exception as cleanup_error:
+                logger.debug(f"Text list cleanup minor issue (safe to continue): {cleanup_error}")
+
             return combined_text
         
         # If we only have 1-2 elements total, just extract from the first one
@@ -490,7 +511,21 @@ class PostExtractor:
         # Return the highest scoring text
         best_candidate = candidate_texts[0]
         logger.info(f"Selected text using {method_name} (score={best_candidate['score']:.1f}): {best_candidate['text'][:100]}...")
-        
+
+        # PHASE 1 GC: Clear element references after text extraction
+        candidate_texts.clear()
+        candidate_texts = None
+
+        # PHASE 2 GC: Clear DOM element references (low risk - elements no longer needed)
+        try:
+            elements.clear()
+            elements = None
+            # Force cleanup of any remaining element references
+            import gc
+            gc.collect()
+        except Exception as cleanup_error:
+            logger.debug(f"Element cleanup minor issue (safe to continue): {cleanup_error}")
+
         return best_candidate['text']
     
     @time_method

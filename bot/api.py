@@ -23,7 +23,6 @@ from bravo_config import CONFIG
 from database import db
 from performance_timer import log_performance_summary
 from modules.message_generator import MessageGenerator
-from browser_manager import MessengerBrowserManager
 from messenger_automation import MessengerAutomation
 
 # Configure logging
@@ -147,8 +146,6 @@ bot_status = {
     "current_status": "idle"
 }
 
-# Global messenger browser manager
-messenger_browser_manager = MessengerBrowserManager()
 
 
 # Remove automatic bot/background browser startup. Only start on /bot/start endpoint.
@@ -993,15 +990,76 @@ def run_bot_with_queuing(bot_instance: FacebookAICommentBot, max_scrolls: int = 
                                 
                                 # Mark as processed
                                 bot_instance.save_processed_post(clean_url, post_text=post_text, post_type="processed")
-                                
+
+                                # PHASE 1 & 2 GC: Browser storage and cache cleanup after each post
+                                try:
+                                    bot_instance.driver.execute_script("sessionStorage.clear();")
+                                    bot_instance.driver.execute_script("window.performance.clearResourceTimings();")
+
+                                    # PHASE 2 GC: More aggressive browser cleanup (low risk)
+                                    bot_instance.driver.execute_script("window.performance.clearMeasures();")
+                                    bot_instance.driver.execute_script("window.performance.clearMarks();")
+                                    # Clear console logs to free memory
+                                    bot_instance.driver.execute_script("console.clear();")
+
+                                except Exception as cleanup_error:
+                                    logger.debug(f"Browser cleanup minor error (safe to ignore): {cleanup_error}")
+
                             except Exception as e:
                                 logger.error(f"Error processing post {clean_url}: {e}")
                                 bot_instance.save_processed_post(clean_url, post_text="", error_message=str(e))
                                 continue
                         
-                        # Wait before next scan (reduced for testing)
+                        # PHASE 1 & 2 GC: Enhanced garbage collection after scan cycle
+                        logger.info("🧹 Performing enhanced garbage collection...")
+
+                        # Memory monitoring (safe)
+                        try:
+                            import psutil
+                            import os
+                            process = psutil.Process(os.getpid())
+                            memory_before = process.memory_info().rss / 1024 / 1024  # MB
+                            logger.info(f"📊 Memory before GC: {memory_before:.1f}MB")
+                        except ImportError:
+                            logger.debug("psutil not available for memory monitoring")
+                            memory_before = 0
+
+                        # PHASE 2 GC: Additional browser cleanup at scan cycle end (low risk)
+                        try:
+                            logger.debug("🧹 Phase 2: Enhanced browser cleanup at scan cycle end")
+                            # Clear any remaining browser cache
+                            bot_instance.driver.execute_script("window.performance.clearResourceTimings();")
+
+                            # Navigate back to main group page if we're on individual posts
+                            current_url = bot_instance.driver.current_url
+                            group_url = CONFIG.get('POST_URL', 'https://www.facebook.com')
+                            if '/posts/' in current_url or '/photo/' in current_url:
+                                logger.debug("🧹 Navigating back to group page to clear post-specific DOM")
+                                bot_instance.driver.get(group_url)
+                                time.sleep(1)  # Brief wait for page load
+
+                        except Exception as browser_cleanup_error:
+                            logger.debug(f"Enhanced browser cleanup minor issue (safe to continue): {browser_cleanup_error}")
+
+                        # Multiple garbage collection passes for better cleanup
+                        import gc
+                        gc.collect()
+                        gc.collect()  # Second pass often frees more memory
+
+                        # Memory monitoring after GC (safe)
+                        try:
+                            if memory_before > 0:
+                                memory_after = process.memory_info().rss / 1024 / 1024  # MB
+                                memory_freed = memory_before - memory_after
+                                logger.info(f"📊 Memory after GC: {memory_after:.1f}MB (freed: {memory_freed:.1f}MB)")
+                        except:
+                            pass
+
+                        logger.info("🧹 Enhanced garbage collection complete")
+
+                        # Wait before next scan - TESTING 5 SECOND INTERVAL WITH PHASE 1 GC
                         logger.info("Scan cycle complete. Starting next scan in 5 seconds...")
-                        time.sleep(5)  # Reduced from 30s for testing
+                        time.sleep(5)  # Back to 5 seconds to test GC effectiveness
                         
                     except Exception as e:
                         logger.error(f"Error during scanning: {e}")
@@ -2326,28 +2384,8 @@ async def send_messenger_message(request: MessengerRequest):
             logger.info("Using shared browser approach for messaging")
             messenger = MessengerAutomation(browser_manager=bot_instance.browser_manager)
         else:
-            # Fallback to dedicated messenger browser (Phase 2 safety net)
-            logger.info("Falling back to dedicated messenger browser")
-
-            # Get browser for this session
-            browser = messenger_browser_manager.get_messenger_browser(request.session_id)
-
-            # Get main browser for session copying
-            main_browser = None
-            try:
-                if bot_instance and hasattr(bot_instance, 'posting_driver') and bot_instance.posting_driver:
-                    main_browser = bot_instance.posting_driver
-                    logger.info("Found main posting browser for session copying")
-                elif bot_instance and hasattr(bot_instance, 'driver') and bot_instance.driver:
-                    main_browser = bot_instance.driver
-                    logger.info("Found main driver for session copying")
-                else:
-                    logger.warning("No main browser found - will use credential login")
-            except Exception as e:
-                logger.warning(f"Could not access main browser: {e}")
-
-            # Create automation instance with source browser for session copying
-            messenger = MessengerAutomation(browser=browser, source_browser=main_browser)
+            logger.error("Bot instance with browser manager not available for messaging")
+            raise HTTPException(status_code=503, detail="Bot is not running or browser manager unavailable")
         
         # Send message with images
         result = await messenger.send_message_with_images(
@@ -2365,30 +2403,33 @@ async def send_messenger_message(request: MessengerRequest):
 
 @app.get("/messenger/sessions")
 async def get_messenger_sessions():
-    """Get active messenger browser sessions"""
+    """Get active messenger browser sessions - now uses shared browser"""
     try:
-        sessions = list(messenger_browser_manager.messenger_browsers.keys())
-        return {"active_sessions": sessions, "count": len(sessions)}
+        # Since we're using shared browser, return simplified session info
+        if bot_instance and hasattr(bot_instance, 'browser_manager') and bot_instance.browser_manager:
+            return {"active_sessions": ["shared_browser"], "count": 1, "type": "shared_browser"}
+        else:
+            return {"active_sessions": [], "count": 0, "type": "no_browser"}
     except Exception as e:
         logger.error(f"Error getting messenger sessions: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to get sessions: {str(e)}")
 
 @app.delete("/messenger/session/{session_id}")
 async def cleanup_messenger_session(session_id: str):
-    """Cleanup specific messenger session"""
+    """Cleanup specific messenger session - now uses shared browser"""
     try:
-        messenger_browser_manager._cleanup_browser(session_id)
-        logger.info(f"✅ Cleaned up messenger session: {session_id}")
-        return {"status": "cleaned", "session_id": session_id}
+        # Since we're using shared browser, no session-specific cleanup needed
+        logger.info(f"✅ Session cleanup not needed for shared browser approach: {session_id}")
+        return {"status": "no_cleanup_needed", "session_id": session_id, "type": "shared_browser"}
     except Exception as e:
-        logger.error(f"Error cleaning up session {session_id}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to cleanup session: {str(e)}")
+        logger.error(f"Error with session {session_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to process session: {str(e)}")
 
-# Cleanup messenger browsers on app shutdown
+# Cleanup browsers on app shutdown
 @app.on_event("shutdown")
 async def cleanup_browsers():
-    messenger_browser_manager.cleanup_all()
-    logger.info("🧹 All messenger browsers cleaned up on shutdown")
+    # Browser cleanup is now handled by the main bot browser manager
+    logger.info("🧹 Browser cleanup handled by main bot browser manager")
 
 @app.on_event("startup")
 async def startup_event():
@@ -2425,17 +2466,8 @@ async def startup_event():
         logger.error(f"❌ Error during startup migration: {e}")
         # Don't fail startup for migration errors - system should still work
     
-    # Start persistent messenger browser - TEMPORARILY DISABLED FOR MEMORY TESTING
-    try:
-        logger.info("🚀 Messenger browser startup disabled for memory optimization")
-        # success = messenger_browser_manager.start_persistent_browser()
-        # if success:
-        #     logger.info("✅ Persistent messenger browser started successfully")
-        # else:
-        #     logger.warning("⚠️ Failed to start persistent messenger browser - messenger automation will not work")
-    except Exception as e:
-        logger.error(f"❌ Error starting persistent browser: {e}")
-        # Don't fail startup for browser errors
+    # Messenger automation now uses shared browser - no separate startup needed
+    logger.info("✅ Messenger automation will use shared browser approach")
 
 @app.get("/debug/env")
 async def check_environment_variables():

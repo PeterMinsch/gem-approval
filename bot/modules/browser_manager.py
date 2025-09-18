@@ -222,6 +222,18 @@ class BrowserManager:
                 chrome_options.add_argument("--disable-prompt-on-repost")   # No repost prompts
                 chrome_options.add_argument("--no-default-browser-check")   # No default browser files
 
+                # Aggressive memory optimization for Docker containers with limited RAM
+                chrome_options.add_argument("--memory-pressure-off")        # Disable memory pressure detection
+                chrome_options.add_argument("--max_old_space_size=512")     # Limit V8 heap to 512MB
+                chrome_options.add_argument("--disable-background-media")   # No background media processing
+                chrome_options.add_argument("--disable-features=TranslateUI,BlinkGenPropertyTrees") # Disable heavy features
+                chrome_options.add_argument("--disable-ipc-flooding-protection") # Reduce IPC overhead
+                chrome_options.add_argument("--disable-renderer-priority-management") # Simplify process management
+                chrome_options.add_argument("--disable-smooth-scrolling")   # Reduce animation overhead
+                chrome_options.add_argument("--disable-threaded-animation") # Single-threaded animations
+                chrome_options.add_argument("--disable-threaded-scrolling") # Single-threaded scrolling
+                chrome_options.add_argument("--disable-composited-antialiasing") # Reduce compositing overhead
+
                 # Add Unicode/emoji handling flags
                 chrome_options.add_argument("--lang=en-US")
                 chrome_options.add_argument("--disable-features=VizDisplayCompositor")
@@ -252,10 +264,10 @@ class BrowserManager:
                 service = Service(ChromeDriverManager().install())
                 
                 self.driver = webdriver.Chrome(service=service, options=chrome_options)
-                # PERFORMANCE FIX: Reduced implicit wait to prevent 73-second delays
-                # Use explicit waits (WebDriverWait) for specific elements instead
-                self.driver.implicitly_wait(1)  # Reduced from 10 seconds
-                self.driver.set_page_load_timeout(30)
+                # PERFORMANCE FIX: Increased timeouts for memory-constrained Docker environment
+                # Slower responses expected due to limited RAM (1.9GB container)
+                self.driver.implicitly_wait(5)   # Increased for memory-constrained environment
+                self.driver.set_page_load_timeout(90)  # Increased from 30 to 90 seconds
                 
                 # Validate connection
                 if not self.driver.session_id:
@@ -350,6 +362,18 @@ class BrowserManager:
                 chrome_options.add_argument("--disable-hang-monitor")       # No hang detection files
                 chrome_options.add_argument("--disable-prompt-on-repost")   # No repost prompts
                 chrome_options.add_argument("--no-default-browser-check")   # No default browser files
+
+                # Aggressive memory optimization for Docker containers with limited RAM
+                chrome_options.add_argument("--memory-pressure-off")        # Disable memory pressure detection
+                chrome_options.add_argument("--max_old_space_size=512")     # Limit V8 heap to 512MB
+                chrome_options.add_argument("--disable-background-media")   # No background media processing
+                chrome_options.add_argument("--disable-features=TranslateUI,BlinkGenPropertyTrees") # Disable heavy features
+                chrome_options.add_argument("--disable-ipc-flooding-protection") # Reduce IPC overhead
+                chrome_options.add_argument("--disable-renderer-priority-management") # Simplify process management
+                chrome_options.add_argument("--disable-smooth-scrolling")   # Reduce animation overhead
+                chrome_options.add_argument("--disable-threaded-animation") # Single-threaded animations
+                chrome_options.add_argument("--disable-threaded-scrolling") # Single-threaded scrolling
+                chrome_options.add_argument("--disable-composited-antialiasing") # Reduce compositing overhead
 
                 # Add Unicode/emoji handling flags
                 chrome_options.add_argument("--lang=en-US")

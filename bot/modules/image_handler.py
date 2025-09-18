@@ -276,4 +276,12 @@ class ImageHandler:
                 logger.warning(f"⚠️ Failed to convert post image {i+1}/{len(post_images)}")
         
         logger.info(f"📁 Converted {len(temp_file_paths)}/{len(post_images)} post images to temporary files")
+
+        # PHASE 2 GC: Clear temporary references (low risk - paths already in return list)
+        try:
+            post_images.clear()
+            post_images = None
+        except Exception as cleanup_error:
+            logger.debug(f"Image list cleanup minor issue (safe to continue): {cleanup_error}")
+
         return temp_file_paths
