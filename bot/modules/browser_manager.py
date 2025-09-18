@@ -549,11 +549,11 @@ class BrowserManager:
     
     def navigate_to_group(self, group_url: str) -> bool:
         """
-        Navigate to a Facebook group
-        
+        Navigate to a Facebook group with automatic login handling
+
         Args:
             group_url: URL of the Facebook group
-            
+
         Returns:
             True if navigation successful, False otherwise
         """
@@ -561,15 +561,59 @@ class BrowserManager:
             logger.info(f"Navigating to group: {group_url}")
             self.driver.get(group_url)
             time.sleep(3)
-            
+
+            current_url = self.driver.current_url.lower()
+
+            # Check if we got redirected to login page
+            if "/login" in current_url and "next=" in current_url:
+                logger.warning("🔐 Group access requires authentication - attempting login...")
+
+                # Get credentials from environment
+                username = os.environ.get('FACEBOOK_USERNAME')
+                password = os.environ.get('FACEBOOK_PASSWORD')
+
+                if username and password:
+                    # Determine what type of login page we're on
+                    if self._is_password_reconfirmation_page():
+                        logger.info("🔐 Detected password re-confirmation for group access")
+                        if self._handle_password_reconfirmation(password):
+                            logger.info("✅ Password re-confirmation successful, retrying group access")
+                            # Wait for redirect and check final URL
+                            time.sleep(3)
+                            if "/groups/" in self.driver.current_url:
+                                logger.info("✅ Successfully navigated to group after authentication")
+                                return True
+                        else:
+                            logger.error("❌ Password re-confirmation failed")
+                            return False
+                    elif self._is_full_login_page():
+                        logger.info("🔑 Detected full login required for group access")
+                        if self._handle_full_login(username, password):
+                            logger.info("✅ Full login successful, retrying group access")
+                            # Navigate to group again after login
+                            self.driver.get(group_url)
+                            time.sleep(3)
+                            if "/groups/" in self.driver.current_url:
+                                logger.info("✅ Successfully navigated to group after login")
+                                return True
+                        else:
+                            logger.error("❌ Full login failed")
+                            return False
+                    else:
+                        logger.error("❌ Unknown login page type for group access")
+                        return False
+                else:
+                    logger.error("❌ No Facebook credentials available for group authentication")
+                    return False
+
             # Check if we're on the group page
-            if "/groups/" in self.driver.current_url:
+            elif "/groups/" in current_url:
                 logger.info("✅ Successfully navigated to group")
                 return True
             else:
-                logger.error("❌ Failed to navigate to group")
+                logger.error(f"❌ Failed to navigate to group - unexpected URL: {self.driver.current_url}")
                 return False
-                
+
         except Exception as e:
             logger.error(f"Error navigating to group: {e}")
             return False
