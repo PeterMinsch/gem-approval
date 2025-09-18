@@ -2531,8 +2531,13 @@ class FacebookAICommentBot:
             
             self.start_posting_thread()
             url = self.config['POST_URL']
-            self.driver.get(url)
-            logger.info(f"Loaded Facebook URL: {url}")
+
+            # Use enhanced navigation with automatic login handling
+            if self.browser_manager.navigate_to_group(url):
+                logger.info(f"✅ Successfully navigated to Facebook URL: {url}")
+            else:
+                logger.error(f"❌ Failed to navigate to Facebook URL: {url}")
+                return
 
             if '/groups/' in url and '/posts/' not in url:
                 logger.info("Detected group URL. Entering smart scanning mode.")

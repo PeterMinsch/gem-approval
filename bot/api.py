@@ -878,9 +878,14 @@ def run_bot_with_queuing(bot_instance: FacebookAICommentBot, max_scrolls: int = 
             # Navigate to the target Facebook group or specific post
             target_url = bot_instance.config.get("POST_URL", "https://www.facebook.com/groups/5440421919361046")
             logger.info(f"Navigating to: {target_url}")
-            
-            bot_instance.driver.get(target_url)
-            logger.info("Successfully navigated to Facebook")
+
+            # Use enhanced navigation with automatic login handling
+            if bot_instance.browser_manager.navigate_to_group(target_url):
+                logger.info("✅ Successfully navigated to target URL with authentication")
+            else:
+                logger.error("❌ Failed to navigate to target URL - authentication may be required")
+                bot_status["is_running"] = False
+                return
             
             # Check if we're targeting a specific post URL
             is_specific_post = "/posts/" in target_url
@@ -931,8 +936,9 @@ def run_bot_with_queuing(bot_instance: FacebookAICommentBot, max_scrolls: int = 
                         elif '/groups/' in group_url:
                             # We might be on an individual post, navigate back to group feed
                             logger.info(f"SCAN_DEBUG: Navigating back to group feed: {group_url}")
-                            bot_instance.driver.get(group_url)
-                            time.sleep(2)  # Wait for page load
+                            if not bot_instance.browser_manager.navigate_to_group(group_url):
+                                logger.error("❌ Failed to navigate back to group feed")
+                                continue
                         
                         # Use the bot's actual post scanning method
                         post_links = bot_instance.scroll_and_collect_post_links(max_scrolls=5)
