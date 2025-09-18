@@ -2320,26 +2320,34 @@ async def send_messenger_message(request: MessengerRequest):
     """Send message via Messenger automation"""
     try:
         logger.info(f"🚀 Messenger automation request - Session: {request.session_id}, Recipient: {request.recipient}")
-        
-        # Get browser for this session
-        browser = messenger_browser_manager.get_messenger_browser(request.session_id)
-        
-        # Get main browser for session copying
-        main_browser = None
-        try:
-            if bot_instance and hasattr(bot_instance, 'posting_driver') and bot_instance.posting_driver:
-                main_browser = bot_instance.posting_driver
-                logger.info("Found main posting browser for session copying")
-            elif bot_instance and hasattr(bot_instance, 'driver') and bot_instance.driver:
-                main_browser = bot_instance.driver
-                logger.info("Found main driver for session copying")
-            else:
-                logger.warning("No main browser found - will use credential login")
-        except Exception as e:
-            logger.warning(f"Could not access main browser: {e}")
-        
-        # Create automation instance with source browser for session copying
-        messenger = MessengerAutomation(browser, source_browser=main_browser)
+
+        # Try shared browser approach first (Phase 2 implementation)
+        if bot_instance and hasattr(bot_instance, 'browser_manager') and bot_instance.browser_manager:
+            logger.info("Using shared browser approach for messaging")
+            messenger = MessengerAutomation(browser_manager=bot_instance.browser_manager)
+        else:
+            # Fallback to dedicated messenger browser (Phase 2 safety net)
+            logger.info("Falling back to dedicated messenger browser")
+
+            # Get browser for this session
+            browser = messenger_browser_manager.get_messenger_browser(request.session_id)
+
+            # Get main browser for session copying
+            main_browser = None
+            try:
+                if bot_instance and hasattr(bot_instance, 'posting_driver') and bot_instance.posting_driver:
+                    main_browser = bot_instance.posting_driver
+                    logger.info("Found main posting browser for session copying")
+                elif bot_instance and hasattr(bot_instance, 'driver') and bot_instance.driver:
+                    main_browser = bot_instance.driver
+                    logger.info("Found main driver for session copying")
+                else:
+                    logger.warning("No main browser found - will use credential login")
+            except Exception as e:
+                logger.warning(f"Could not access main browser: {e}")
+
+            # Create automation instance with source browser for session copying
+            messenger = MessengerAutomation(browser=browser, source_browser=main_browser)
         
         # Send message with images
         result = await messenger.send_message_with_images(

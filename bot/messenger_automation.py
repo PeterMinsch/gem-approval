@@ -11,33 +11,62 @@ import logging
 logger = logging.getLogger(__name__)
 
 class MessengerAutomation:
-    def __init__(self, browser: webdriver.Chrome, source_browser: webdriver.Chrome = None):
-        self.browser = browser
+    def __init__(self, browser_manager=None, browser: webdriver.Chrome = None, source_browser: webdriver.Chrome = None):
+        """
+        Initialize MessengerAutomation - now supports both shared browser manager and dedicated browser.
+
+        Args:
+            browser_manager: BrowserManager instance for shared browser access (preferred)
+            browser: Dedicated browser instance (legacy mode)
+            source_browser: Source browser for session copying (legacy)
+        """
+        self.browser_manager = browser_manager
+        self.browser = browser  # Will be set dynamically when using shared browser
         self.source_browser = source_browser
-        self.wait = WebDriverWait(browser, 10)
+        self.wait = None  # Will be initialized when browser is available
+        self._using_shared_browser = browser_manager is not None
         
     async def send_message_with_images(self, recipient: str, message: str, image_paths: list = None):
         """Send message first, then images separately - much cleaner approach"""
         start_time = time.time()
-        
+
+        # Request shared browser access if using browser manager
+        browser_acquired = False
+        if self._using_shared_browser:
+            from modules.browser_manager import BrowserOperation
+            browser_acquired = await self.browser_manager.request_browser_for_operation(
+                BrowserOperation.MESSAGING, timeout=15
+            )
+            if not browser_acquired:
+                return {"status": "error", "error": "Could not acquire browser for messaging - posting operation in progress"}
+
+            # Get the shared browser instance
+            self.browser = self.browser_manager.get_posting_browser_for_messaging()
+            if not self.browser:
+                self.browser_manager.release_browser_from_operation(BrowserOperation.MESSAGING, restore_url=False)
+                return {"status": "error", "error": "Posting browser not available for messaging"}
+
+            # Initialize WebDriverWait with the shared browser
+            self.wait = WebDriverWait(self.browser, 10)
+
         try:
             # Navigate to messenger if not already there
             await self._navigate_to_messenger()
-            
+
             # Find or start conversation
             await self._open_conversation(recipient)
-            
+
             # Send text message FIRST (clean and simple)
             await self._send_text_message(message)
-            
+
             # Send images SEPARATELY (one by one, when UI is clean)
             if image_paths:
                 for image_path in image_paths:
                     await self._send_single_image(image_path)
-            
+
             duration = time.time() - start_time
             return {"status": "success", "duration": f"{duration:.2f}s"}
-            
+
         except Exception as e:
             logger.error(f"Failed to send message: {e}")
             return {"status": "error", "error": str(e)}
@@ -47,6 +76,13 @@ class MessengerAutomation:
                 await self._enable_link_clicks()
             except:
                 pass  # Don't let cleanup errors affect the main result
+
+            # Release shared browser if we acquired it
+            if self._using_shared_browser and browser_acquired:
+                from modules.browser_manager import BrowserOperation
+                self.browser_manager.release_browser_from_operation(
+                    BrowserOperation.MESSAGING, restore_url=True
+                )
     
     async def _navigate_to_messenger(self):
         """Navigate to Facebook Messenger"""

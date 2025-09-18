@@ -32,7 +32,7 @@ from comment_generator import CommentGenerator as ExternalCommentGenerator
 from performance_timer import time_method, log_performance_summary
 
 # Import our new modules
-from modules.browser_manager import BrowserManager
+from modules.browser_manager import BrowserManager, BrowserOperation
 from modules.post_extractor import PostExtractor
 from modules.interaction_handler import InteractionHandler
 from modules.queue_manager import QueueManager
@@ -848,6 +848,18 @@ class FacebookAICommentBot:
         from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
         from selenium.webdriver.support.ui import WebDriverWait
         from selenium.webdriver.support import expected_conditions as EC
+
+        # Request browser access for posting operation
+        if not self.browser_manager.request_browser_for_posting_sync(timeout=10):
+            logger.error(f"[POSTING THREAD] Could not acquire browser for posting to {post_url}")
+            if comment_id:
+                try:
+                    from database import db
+                    db.update_comment_status(int(comment_id), "failed", error_message="Browser busy with another operation")
+                except:
+                    pass
+            return False
+
         driver = self.posting_driver
         try:
             driver.get(post_url)
@@ -862,6 +874,8 @@ class FacebookAICommentBot:
                         db.update_comment_status(int(comment_id), "failed", error_message="Not logged into Facebook")
                     except:
                         pass
+                # Release browser operation on login failure
+                self.browser_manager.release_browser_from_operation(BrowserOperation.POSTING, restore_url=False)
                 return False
             def find_comment_box():
                 elements = driver.find_elements(By.XPATH, self.config['COMMENT_BOX_XPATH'])
@@ -885,6 +899,8 @@ class FacebookAICommentBot:
                         db.update_comment_status(int(comment_id), "failed", error_message="Could not find comment box")
                     except:
                         pass
+                # Release browser operation on comment box failure
+                self.browser_manager.release_browser_from_operation(BrowserOperation.POSTING, restore_url=True)
                 return False
 
             # Robust interaction with retries
@@ -903,6 +919,8 @@ class FacebookAICommentBot:
                         logger.warning(f"[POSTING THREAD] Error on attempt {attempt+1}: {e}")
                         time.sleep(1)
                 logger.error(f"[POSTING THREAD] Failed action after {max_retries} retries.")
+                # Release browser operation on action failure
+                self.browser_manager.release_browser_from_operation(BrowserOperation.POSTING, restore_url=True)
                 return False
 
             # Click
@@ -914,6 +932,8 @@ class FacebookAICommentBot:
                         db.update_comment_status(int(comment_id), "failed", error_message="Failed to click comment box")
                     except:
                         pass
+                # Release browser operation on click failure
+                self.browser_manager.release_browser_from_operation(BrowserOperation.POSTING, restore_url=True)
                 return False
             time.sleep(1)
             # Type comment
@@ -925,6 +945,8 @@ class FacebookAICommentBot:
                         db.update_comment_status(int(comment_id), "failed", error_message="Failed to type comment")
                     except:
                         pass
+                # Release browser operation on typing failure
+                self.browser_manager.release_browser_from_operation(BrowserOperation.POSTING, restore_url=True)
                 return False
             time.sleep(0.5)
             # Press RETURN
@@ -936,6 +958,8 @@ class FacebookAICommentBot:
                         db.update_comment_status(int(comment_id), "failed", error_message="Failed to submit comment")
                     except:
                         pass
+                # Release browser operation on submit failure
+                self.browser_manager.release_browser_from_operation(BrowserOperation.POSTING, restore_url=True)
                 return False
                 
             logger.info(f"[POSTING THREAD] Successfully posted comment to: {post_url}")
@@ -950,11 +974,14 @@ class FacebookAICommentBot:
                     logger.error(f"[POSTING THREAD] Failed to update database status: {db_error}")
             
             time.sleep(2)
+
+            # Release browser operation
+            self.browser_manager.release_browser_from_operation(BrowserOperation.POSTING, restore_url=True)
             return True
-            
+
         except Exception as e:
             logger.error(f"[POSTING THREAD] Failed to post comment to {post_url}: {e}")
-            
+
             # Update database status on exception
             if comment_id:
                 try:
@@ -962,6 +989,9 @@ class FacebookAICommentBot:
                     db.update_comment_status(int(comment_id), "failed", error_message=str(e))
                 except:
                     pass
+
+            # Release browser operation on failure
+            self.browser_manager.release_browser_from_operation(BrowserOperation.POSTING, restore_url=True)
             return False
 
 

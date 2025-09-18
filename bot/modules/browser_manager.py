@@ -6,7 +6,9 @@ Handles WebDriver setup, login, navigation, and browser lifecycle
 import os
 import time
 import logging
-from typing import Optional
+import asyncio
+from typing import Optional, Literal
+from enum import Enum
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
@@ -18,6 +20,14 @@ from selenium.common.exceptions import WebDriverException, TimeoutException
 from webdriver_manager.chrome import ChromeDriverManager
 
 logger = logging.getLogger(__name__)
+
+
+class BrowserOperation(Enum):
+    """Enum for tracking current browser operation state"""
+    IDLE = "idle"
+    POSTING = "posting"
+    MESSAGING = "messaging"
+    SCANNING = "scanning"
 
 
 class BrowserManager:
@@ -34,7 +44,132 @@ class BrowserManager:
         self.driver: Optional[webdriver.Chrome] = None
         self.posting_driver: Optional[webdriver.Chrome] = None
         self._temp_chrome_dir: Optional[str] = None
-    
+
+        # Browser operation state management
+        self.current_operation: BrowserOperation = BrowserOperation.IDLE
+        self.operation_lock = asyncio.Lock()
+        self._last_url: Optional[str] = None
+        self._operation_timeout = 30  # seconds
+
+    async def request_browser_for_operation(self, operation: BrowserOperation, timeout: Optional[float] = None) -> bool:
+        """
+        Request exclusive access to the posting browser for a specific operation.
+
+        Args:
+            operation: The type of operation requesting browser access
+            timeout: Optional timeout in seconds (defaults to self._operation_timeout)
+
+        Returns:
+            True if browser access granted, False if timeout or conflict
+        """
+        timeout = timeout or self._operation_timeout
+
+        try:
+            # Try to acquire lock with timeout
+            await asyncio.wait_for(self.operation_lock.acquire(), timeout=timeout)
+
+            # Check if we can safely switch operations
+            if self.current_operation != BrowserOperation.IDLE:
+                logger.warning(f"Browser busy with {self.current_operation.value}, requested for {operation.value}")
+                self.operation_lock.release()
+                return False
+
+            # Store current URL for restoration
+            if self.posting_driver and hasattr(self.posting_driver, 'current_url'):
+                try:
+                    self._last_url = self.posting_driver.current_url
+                except Exception as e:
+                    logger.debug(f"Could not get current URL: {e}")
+                    self._last_url = None
+
+            # Set new operation state
+            self.current_operation = operation
+            logger.info(f"🔒 Browser locked for {operation.value} operation")
+            return True
+
+        except asyncio.TimeoutError:
+            logger.warning(f"Timeout waiting for browser access for {operation.value}")
+            return False
+        except Exception as e:
+            logger.error(f"Error requesting browser for {operation.value}: {e}")
+            return False
+
+    def release_browser_from_operation(self, operation: BrowserOperation, restore_url: bool = True) -> None:
+        """
+        Release browser access after completing an operation.
+
+        Args:
+            operation: The operation that is releasing the browser
+            restore_url: Whether to restore the previous URL
+        """
+        try:
+            if self.current_operation != operation:
+                logger.warning(f"Operation mismatch: expected {operation.value}, current {self.current_operation.value}")
+
+            # Restore previous URL if requested and available
+            if restore_url and self._last_url and self.posting_driver:
+                try:
+                    if self.posting_driver.current_url != self._last_url:
+                        logger.info(f"🔄 Restoring URL: {self._last_url}")
+                        self.posting_driver.get(self._last_url)
+                        time.sleep(1)  # Allow page to load
+                except Exception as e:
+                    logger.warning(f"Could not restore URL {self._last_url}: {e}")
+
+            # Reset state
+            self.current_operation = BrowserOperation.IDLE
+            self._last_url = None
+
+            # Release lock
+            if self.operation_lock.locked():
+                self.operation_lock.release()
+                logger.info(f"🔓 Browser released from {operation.value} operation")
+
+        except Exception as e:
+            logger.error(f"Error releasing browser from {operation.value}: {e}")
+
+    def get_posting_browser_for_messaging(self) -> Optional[webdriver.Chrome]:
+        """
+        Get the posting browser for messaging operations.
+        Should only be called after successful request_browser_for_operation.
+
+        Returns:
+            Posting browser instance if available and operation is MESSAGING
+        """
+        if self.current_operation != BrowserOperation.MESSAGING:
+            logger.error(f"Invalid browser access: current operation is {self.current_operation.value}, not messaging")
+            return None
+
+        if not self.posting_driver:
+            logger.error("Posting driver not available for messaging")
+            return None
+
+        return self.posting_driver
+
+    def request_browser_for_posting_sync(self, timeout: Optional[float] = None) -> bool:
+        """
+        Synchronous wrapper for requesting browser for posting operations.
+        Uses asyncio to handle the async lock.
+
+        Returns:
+            True if browser access granted, False otherwise
+        """
+        try:
+            # Create event loop if one doesn't exist
+            try:
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+
+            # Run the async method
+            return loop.run_until_complete(
+                self.request_browser_for_operation(BrowserOperation.POSTING, timeout)
+            )
+        except Exception as e:
+            logger.error(f"Error in sync posting browser request: {e}")
+            return False
+
     def setup_driver(self) -> webdriver.Chrome:
         """
         Setup main Chrome driver with connection validation and retry logic
@@ -72,6 +207,20 @@ class BrowserManager:
                 chrome_options.add_argument("--disable-background-networking") # No background requests
                 chrome_options.add_argument("--disable-sync")               # No Chrome sync
                 chrome_options.add_argument("--disable-default-apps")       # No default apps
+
+                # Cache-disabling flags to prevent unnecessary file creation
+                chrome_options.add_argument("--disable-http-cache")          # No web page caching
+                chrome_options.add_argument("--aggressive-cache-discard")    # Immediately discard cache
+                chrome_options.add_argument("--disable-gpu-sandbox")         # No GPU cache files
+                chrome_options.add_argument("--disable-software-rasterizer") # No software rendering cache
+                chrome_options.add_argument("--disable-background-timer-throttling") # No background timers
+                chrome_options.add_argument("--disable-renderer-backgrounding") # No background renderer
+                chrome_options.add_argument("--disable-backgrounding-occluded-windows") # No hidden window cache
+                chrome_options.add_argument("--disable-client-side-phishing-detection") # No phishing cache
+                chrome_options.add_argument("--disable-component-update")   # No component updates
+                chrome_options.add_argument("--disable-hang-monitor")       # No hang detection files
+                chrome_options.add_argument("--disable-prompt-on-repost")   # No repost prompts
+                chrome_options.add_argument("--no-default-browser-check")   # No default browser files
 
                 # Add Unicode/emoji handling flags
                 chrome_options.add_argument("--lang=en-US")
@@ -187,6 +336,20 @@ class BrowserManager:
                 chrome_options.add_argument("--disable-background-networking") # No background requests
                 chrome_options.add_argument("--disable-sync")               # No Chrome sync
                 chrome_options.add_argument("--disable-default-apps")       # No default apps
+
+                # Cache-disabling flags to prevent unnecessary file creation
+                chrome_options.add_argument("--disable-http-cache")          # No web page caching
+                chrome_options.add_argument("--aggressive-cache-discard")    # Immediately discard cache
+                chrome_options.add_argument("--disable-gpu-sandbox")         # No GPU cache files
+                chrome_options.add_argument("--disable-software-rasterizer") # No software rendering cache
+                chrome_options.add_argument("--disable-background-timer-throttling") # No background timers
+                chrome_options.add_argument("--disable-renderer-backgrounding") # No background renderer
+                chrome_options.add_argument("--disable-backgrounding-occluded-windows") # No hidden window cache
+                chrome_options.add_argument("--disable-client-side-phishing-detection") # No phishing cache
+                chrome_options.add_argument("--disable-component-update")   # No component updates
+                chrome_options.add_argument("--disable-hang-monitor")       # No hang detection files
+                chrome_options.add_argument("--disable-prompt-on-repost")   # No repost prompts
+                chrome_options.add_argument("--no-default-browser-check")   # No default browser files
 
                 # Add Unicode/emoji handling flags
                 chrome_options.add_argument("--lang=en-US")

@@ -61,7 +61,24 @@ class MessengerBrowserManager:
             chrome_options.add_experimental_option('useAutomationExtension', False)
             chrome_options.add_argument("--log-level=3")
             chrome_options.add_argument("--silent")
-            
+
+            # Cache-disabling flags to prevent unnecessary file creation
+            chrome_options.add_argument("--disable-http-cache")          # No web page caching
+            chrome_options.add_argument("--aggressive-cache-discard")    # Immediately discard cache
+            chrome_options.add_argument("--disable-gpu-sandbox")         # No GPU cache files
+            chrome_options.add_argument("--disable-software-rasterizer") # No software rendering cache
+            chrome_options.add_argument("--disable-background-timer-throttling") # No background timers
+            chrome_options.add_argument("--disable-renderer-backgrounding") # No background renderer
+            chrome_options.add_argument("--disable-backgrounding-occluded-windows") # No hidden window cache
+            chrome_options.add_argument("--disable-background-networking") # No background requests
+            chrome_options.add_argument("--disable-sync")               # No Chrome sync
+            chrome_options.add_argument("--disable-default-apps")       # No default apps
+            chrome_options.add_argument("--disable-client-side-phishing-detection") # No phishing cache
+            chrome_options.add_argument("--disable-component-update")   # No component updates
+            chrome_options.add_argument("--disable-hang-monitor")       # No hang detection files
+            chrome_options.add_argument("--disable-prompt-on-repost")   # No repost prompts
+            chrome_options.add_argument("--no-default-browser-check")   # No default browser files
+
             # Use persistent profile directory to maintain login sessions
             user_data_dir = os.path.join(os.getcwd(), "chrome_persistent_messenger")
             os.makedirs(user_data_dir, exist_ok=True)
@@ -123,7 +140,24 @@ class MessengerBrowserManager:
             chrome_options.add_experimental_option('useAutomationExtension', False)
             chrome_options.add_argument("--log-level=3")
             chrome_options.add_argument("--silent")
-            
+
+            # Cache-disabling flags to prevent unnecessary file creation
+            chrome_options.add_argument("--disable-http-cache")          # No web page caching
+            chrome_options.add_argument("--aggressive-cache-discard")    # Immediately discard cache
+            chrome_options.add_argument("--disable-gpu-sandbox")         # No GPU cache files
+            chrome_options.add_argument("--disable-software-rasterizer") # No software rendering cache
+            chrome_options.add_argument("--disable-background-timer-throttling") # No background timers
+            chrome_options.add_argument("--disable-renderer-backgrounding") # No background renderer
+            chrome_options.add_argument("--disable-backgrounding-occluded-windows") # No hidden window cache
+            chrome_options.add_argument("--disable-background-networking") # No background requests
+            chrome_options.add_argument("--disable-sync")               # No Chrome sync
+            chrome_options.add_argument("--disable-default-apps")       # No default apps
+            chrome_options.add_argument("--disable-client-side-phishing-detection") # No phishing cache
+            chrome_options.add_argument("--disable-component-update")   # No component updates
+            chrome_options.add_argument("--disable-hang-monitor")       # No hang detection files
+            chrome_options.add_argument("--disable-prompt-on-repost")   # No repost prompts
+            chrome_options.add_argument("--no-default-browser-check")   # No default browser files
+
             # Use persistent profile directory
             user_data_dir = os.path.join(os.getcwd(), "chrome_messenger_persistent")
             chrome_options.add_argument(f"--user-data-dir={user_data_dir}")
