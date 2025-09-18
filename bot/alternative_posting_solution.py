@@ -50,7 +50,10 @@ class PostingManager:
             # Click and type comment
             comment_box.click()
             time.sleep(1)
-            comment_box.send_keys(comment_text)
+
+            # Sanitize comment text for ChromeDriver compatibility
+            sanitized_comment = self._sanitize_unicode_for_chrome(comment_text)
+            comment_box.send_keys(sanitized_comment)
             time.sleep(1)
             
             # Submit comment
@@ -88,6 +91,47 @@ class PostingManager:
                 return elements[0]
                 
         return None
+
+    def _sanitize_unicode_for_chrome(self, text: str) -> str:
+        """
+        Sanitize Unicode characters that ChromeDriver can't handle (non-BMP characters).
+        Converts problematic emojis and Unicode to safe alternatives.
+        """
+        try:
+            # Replace common problematic emojis with text equivalents
+            emoji_replacements = {
+                '✨': '*',       # Sparkles
+                '💎': 'diamond', # Diamond
+                '💍': 'ring',    # Ring
+                '👑': 'crown',   # Crown
+                '🌟': '*',       # Star
+                '⭐': '*',       # Star
+                '💫': '*',       # Dizzy star
+                '🔥': 'fire',    # Fire
+                '❤️': 'love',    # Heart
+                '💖': 'love',    # Sparkling heart
+                '😍': ':)',      # Heart eyes
+                '🤩': ':)',      # Star eyes
+                '👍': 'thumbs up', # Thumbs up
+                '💯': '100',     # 100 emoji
+                '🎉': '!',       # Party
+                '🏆': 'trophy',  # Trophy
+            }
+
+            # Apply emoji replacements
+            sanitized = text
+            for emoji, replacement in emoji_replacements.items():
+                sanitized = sanitized.replace(emoji, replacement)
+
+            # Remove any remaining non-BMP characters (Unicode > U+FFFF)
+            # Keep only Basic Multilingual Plane characters
+            sanitized = ''.join(char for char in sanitized if ord(char) <= 0xFFFF)
+
+            return sanitized
+
+        except Exception as e:
+            print(f"[UNICODE] Error sanitizing text, using original: {e}")
+            return text
 
 
 def integrate_with_api(bot_instance):

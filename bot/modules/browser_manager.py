@@ -67,7 +67,15 @@ class BrowserManager:
                 chrome_options.add_experimental_option('useAutomationExtension', False)
                 chrome_options.add_argument("--log-level=3")
                 chrome_options.add_argument("--silent")
-                
+
+                # Add Unicode/emoji handling flags
+                chrome_options.add_argument("--lang=en-US")
+                chrome_options.add_argument("--disable-features=VizDisplayCompositor")
+                chrome_options.add_experimental_option("prefs", {
+                    "intl.accept_languages": "en-US,en",
+                    "profile.default_content_setting_values.notifications": 2
+                })
+
                 # Use persistent profile to maintain login sessions
                 user_data_dir = os.path.join(os.getcwd(), "chrome_persistent_main")
                 os.makedirs(user_data_dir, exist_ok=True)
@@ -169,7 +177,15 @@ class BrowserManager:
                 chrome_options.add_experimental_option('useAutomationExtension', False)
                 chrome_options.add_argument("--log-level=3")
                 chrome_options.add_argument("--silent")
-                
+
+                # Add Unicode/emoji handling flags
+                chrome_options.add_argument("--lang=en-US")
+                chrome_options.add_argument("--disable-features=VizDisplayCompositor")
+                chrome_options.add_experimental_option("prefs", {
+                    "intl.accept_languages": "en-US,en",
+                    "profile.default_content_setting_values.notifications": 2
+                })
+
                 # Use persistent profile to maintain login sessions
                 user_data_dir = os.path.join(os.getcwd(), "chrome_persistent_profile")
                 os.makedirs(user_data_dir, exist_ok=True)

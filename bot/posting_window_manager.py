@@ -143,8 +143,11 @@ class WindowPostingManager:
             comment_box.clear()
             time.sleep(0.2)  # Minimal clear buffer
             
+            # Sanitize comment text for ChromeDriver compatibility
+            sanitized_comment = self._sanitize_unicode_for_chrome(comment_text)
+
             # Type the comment
-            comment_box.send_keys(comment_text)
+            comment_box.send_keys(sanitized_comment)
             time.sleep(0.3)  # Minimal typing buffer
             
             # Submit comment
@@ -202,7 +205,53 @@ class WindowPostingManager:
                 return elements[0]
         
         return None
-    
+
+    def _sanitize_unicode_for_chrome(self, text: str) -> str:
+        """
+        Sanitize Unicode characters that ChromeDriver can't handle (non-BMP characters).
+        Converts problematic emojis and Unicode to safe alternatives.
+        """
+        try:
+            # Replace common problematic emojis with text equivalents
+            emoji_replacements = {
+                '✨': '*',       # Sparkles
+                '💎': 'diamond', # Diamond
+                '💍': 'ring',    # Ring
+                '👑': 'crown',   # Crown
+                '🌟': '*',       # Star
+                '⭐': '*',       # Star
+                '💫': '*',       # Dizzy star
+                '🔥': 'fire',    # Fire
+                '❤️': 'love',    # Heart
+                '💖': 'love',    # Sparkling heart
+                '😍': ':)',      # Heart eyes
+                '🤩': ':)',      # Star eyes
+                '👍': 'thumbs up', # Thumbs up
+                '💯': '100',     # 100 emoji
+                '🎉': '!',       # Party
+                '🏆': 'trophy',  # Trophy
+            }
+
+            # Apply emoji replacements
+            sanitized = text
+            for emoji, replacement in emoji_replacements.items():
+                sanitized = sanitized.replace(emoji, replacement)
+
+            # Remove any remaining non-BMP characters (Unicode > U+FFFF)
+            # Keep only Basic Multilingual Plane characters
+            sanitized = ''.join(char for char in sanitized if ord(char) <= 0xFFFF)
+
+            if sanitized != text:
+                logger.info(f"[UNICODE] Sanitized comment text for ChromeDriver compatibility")
+                logger.debug(f"[UNICODE] Original: {text[:50]}...")
+                logger.debug(f"[UNICODE] Sanitized: {sanitized[:50]}...")
+
+            return sanitized
+
+        except Exception as e:
+            logger.warning(f"[UNICODE] Error sanitizing text, using original: {e}")
+            return text
+
     def cleanup(self):
         """Close the posting window and cleanup"""
         try:
