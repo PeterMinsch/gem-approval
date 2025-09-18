@@ -583,7 +583,7 @@ def run_bot_in_background(post_url: str = None, max_scrolls: int = None,
         # Clear database if requested
         if clear_database:
             logger.info("🗑️ Clearing database as requested...")
-            db.clear_database()
+            db.clear_all_data()
             logger.info("✅ Database cleared")
         
         # Create bot instance with config
