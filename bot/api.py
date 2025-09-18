@@ -2417,14 +2417,14 @@ async def startup_event():
         logger.error(f"❌ Error during startup migration: {e}")
         # Don't fail startup for migration errors - system should still work
     
-    # Start persistent messenger browser
+    # Start persistent messenger browser - TEMPORARILY DISABLED FOR MEMORY TESTING
     try:
-        logger.info("🚀 Starting persistent messenger browser...")
-        success = messenger_browser_manager.start_persistent_browser()
-        if success:
-            logger.info("✅ Persistent messenger browser started successfully")
-        else:
-            logger.warning("⚠️ Failed to start persistent messenger browser - messenger automation will not work")
+        logger.info("🚀 Messenger browser startup disabled for memory optimization")
+        # success = messenger_browser_manager.start_persistent_browser()
+        # if success:
+        #     logger.info("✅ Persistent messenger browser started successfully")
+        # else:
+        #     logger.warning("⚠️ Failed to start persistent messenger browser - messenger automation will not work")
     except Exception as e:
         logger.error(f"❌ Error starting persistent browser: {e}")
         # Don't fail startup for browser errors
