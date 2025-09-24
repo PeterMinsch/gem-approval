@@ -191,83 +191,43 @@ class BrowserManager:
                 os.environ['CHROME_LOG_FILE'] = 'nul'
                 
                 chrome_options = Options()
-                # Use PROVEN working configuration from posting driver
-                chrome_options.add_argument("--headless")  # Run in headless mode
+
+                # CRITICAL FIX: Ultra-minimal Chrome options for problematic server environment
+                # Only the absolutely essential flags to get Chrome working
+                chrome_options.add_argument("--headless")
                 chrome_options.add_argument("--no-sandbox")
                 chrome_options.add_argument("--disable-dev-shm-usage")
-                chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-                chrome_options.add_argument("--disable-notifications")
-                chrome_options.add_argument("--disable-popup-blocking")
-                chrome_options.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
-                chrome_options.add_experimental_option('useAutomationExtension', False)
-                chrome_options.add_argument("--log-level=3")
-                chrome_options.add_argument("--silent")
+                chrome_options.add_argument("--disable-gpu")
+                chrome_options.add_argument("--disable-extensions")
+                chrome_options.add_argument("--disable-plugins")
+                chrome_options.add_argument("--disable-web-security")
+                chrome_options.add_argument("--single-process")
+                chrome_options.add_argument("--disable-logging")
+                chrome_options.add_argument("--window-size=1366,768")  # Smaller window
+                chrome_options.add_argument("--memory-pressure-off")
+                chrome_options.add_argument("--max_old_space_size=256")  # Even smaller heap
 
-                # Safe memory optimization flags for low-RAM server (main browser)
-                chrome_options.add_argument("--disable-background-networking") # No background requests
-                chrome_options.add_argument("--disable-sync")               # No Chrome sync
-                chrome_options.add_argument("--disable-default-apps")       # No default apps
-
-                # Cache-disabling flags to prevent unnecessary file creation
-                chrome_options.add_argument("--disable-http-cache")          # No web page caching
-                chrome_options.add_argument("--aggressive-cache-discard")    # Immediately discard cache
-                chrome_options.add_argument("--disable-gpu-sandbox")         # No GPU cache files
-                chrome_options.add_argument("--disable-software-rasterizer") # No software rendering cache
-                chrome_options.add_argument("--disable-background-timer-throttling") # No background timers
-                chrome_options.add_argument("--disable-renderer-backgrounding") # No background renderer
-                chrome_options.add_argument("--disable-backgrounding-occluded-windows") # No hidden window cache
-                chrome_options.add_argument("--disable-client-side-phishing-detection") # No phishing cache
-                chrome_options.add_argument("--disable-component-update")   # No component updates
-                chrome_options.add_argument("--disable-hang-monitor")       # No hang detection files
-                chrome_options.add_argument("--disable-prompt-on-repost")   # No repost prompts
-                chrome_options.add_argument("--no-default-browser-check")   # No default browser files
-
-                # Aggressive memory optimization for Docker containers with limited RAM
-                chrome_options.add_argument("--memory-pressure-off")        # Disable memory pressure detection
-                chrome_options.add_argument("--max_old_space_size=512")     # Limit V8 heap to 512MB
-                chrome_options.add_argument("--disable-background-media")   # No background media processing
-                chrome_options.add_argument("--disable-features=TranslateUI,BlinkGenPropertyTrees") # Disable heavy features
-                chrome_options.add_argument("--disable-ipc-flooding-protection") # Reduce IPC overhead
-                chrome_options.add_argument("--disable-renderer-priority-management") # Simplify process management
-                chrome_options.add_argument("--disable-smooth-scrolling")   # Reduce animation overhead
-                chrome_options.add_argument("--disable-threaded-animation") # Single-threaded animations
-                chrome_options.add_argument("--disable-threaded-scrolling") # Single-threaded scrolling
-                chrome_options.add_argument("--disable-composited-antialiasing") # Reduce compositing overhead
-
-                # Add Unicode/emoji handling flags
-                chrome_options.add_argument("--lang=en-US")
-                chrome_options.add_argument("--disable-features=VizDisplayCompositor")
-                chrome_options.add_experimental_option("prefs", {
-                    "intl.accept_languages": "en-US,en",
-                    "profile.default_content_setting_values.notifications": 2
-                })
-
-                # Use persistent profile to maintain login sessions
-                user_data_dir = os.path.join(os.getcwd(), "chrome_persistent_main")
+                # Minimal profile setup
+                user_data_dir = os.path.join(os.getcwd(), "chrome_minimal_main")
                 os.makedirs(user_data_dir, exist_ok=True)
                 chrome_options.add_argument(f"--user-data-dir={user_data_dir}")
-                chrome_options.add_argument(f"--profile-directory={self.config.get('CHROME_PROFILE', 'MainProfile')}")
-                
-                # Set window size
-                chrome_options.add_argument("--window-size=1920,1080")
-                
-                # Connection pool optimization arguments
-                chrome_options.add_argument("--max-connections-per-host=10")
-                chrome_options.add_argument("--max-connections-per-proxy=8") 
-                chrome_options.add_argument("--aggressive-cache-discard")
-                chrome_options.add_argument("--disable-background-networking")
-                
-                # Enable remote debugging on main port
-                chrome_options.add_argument("--remote-debugging-port=9222")
-                chrome_options.add_argument("--remote-debugging-address=127.0.0.1")
-                
+
                 service = Service(ChromeDriverManager().install())
-                
+
+                # CRITICAL FIX: Simple Chrome driver creation with minimal overhead
+                logger.info("🔧 Creating Chrome driver with minimal configuration...")
                 self.driver = webdriver.Chrome(service=service, options=chrome_options)
-                # PERFORMANCE FIX: Increased timeouts for memory-constrained Docker environment
-                # Slower responses expected due to limited RAM (1.9GB container)
-                self.driver.implicitly_wait(5)   # Increased for memory-constrained environment
-                self.driver.set_page_load_timeout(90)  # Increased from 30 to 90 seconds
+
+                # Minimal timeout configuration
+                self.driver.implicitly_wait(1)
+                self.driver.set_page_load_timeout(30)
+
+                # Set shorter connection timeouts if available
+                try:
+                    self.driver.command_executor._timeout = 20
+                    self.driver.command_executor.keep_alive = False
+                except Exception:
+                    pass  # Ignore if these attributes don't exist
                 
                 # Validate connection
                 if not self.driver.session_id:
@@ -772,8 +732,68 @@ class BrowserManager:
         """
         try:
             logger.info(f"Navigating to group: {group_url}")
-            self.driver.get(group_url)
-            time.sleep(3)
+
+            # CRITICAL FIX: Copy authentication from working posting driver BEFORE navigation
+            if self.posting_driver and self.driver:
+                logger.info("🔄 Copying authentication cookies from posting driver to main driver...")
+                try:
+                    # Navigate main driver to Facebook base page first
+                    self.driver.set_page_load_timeout(30)  # Shorter timeout for base page
+                    self.driver.get("https://www.facebook.com")
+                    time.sleep(2)
+
+                    # Get cookies from posting driver (which is already authenticated)
+                    self.posting_driver.get("https://www.facebook.com")
+                    time.sleep(1)
+                    posting_cookies = self.posting_driver.get_cookies()
+                    logger.info(f"📋 Found {len(posting_cookies)} cookies in posting driver")
+
+                    # Copy important authentication cookies to main driver
+                    copied_count = 0
+                    for cookie in posting_cookies:
+                        try:
+                            cookie_name = cookie.get('name', 'unknown')
+                            # Focus on critical Facebook auth cookies
+                            if cookie_name in ['c_user', 'xs', 'datr', 'sb', 'fr', 'presence', 'dpr', 'wd']:
+                                clean_cookie = {
+                                    'name': cookie_name,
+                                    'value': cookie['value'],
+                                    'domain': cookie.get('domain', '.facebook.com')
+                                }
+                                self.driver.add_cookie(clean_cookie)
+                                copied_count += 1
+                                logger.debug(f"✅ Copied cookie: {cookie_name}")
+                        except Exception as e:
+                            logger.debug(f"Failed to copy cookie {cookie_name}: {e}")
+
+                    logger.info(f"✅ Copied {copied_count} authentication cookies to main driver")
+
+                    # Restore longer timeout for group navigation
+                    self.driver.set_page_load_timeout(90)
+
+                except Exception as e:
+                    logger.warning(f"Cookie copying failed, proceeding without auth: {e}")
+
+            # Now navigate to the group with authentication and retry logic
+            logger.info(f"🎯 Navigating to group with authentication: {group_url}")
+
+            # Retry logic for navigation
+            max_nav_retries = 3
+            for nav_attempt in range(max_nav_retries):
+                try:
+                    logger.info(f"Navigation attempt {nav_attempt + 1}/{max_nav_retries}")
+                    self.driver.get(group_url)
+                    time.sleep(3)
+                    break  # Success, exit retry loop
+                except Exception as nav_error:
+                    logger.warning(f"Navigation attempt {nav_attempt + 1} failed: {nav_error}")
+                    if nav_attempt == max_nav_retries - 1:
+                        # Last attempt failed
+                        logger.error(f"All {max_nav_retries} navigation attempts failed")
+                        return False
+                    else:
+                        # Wait before retry
+                        time.sleep(5)
 
             current_url = self.driver.current_url.lower()
 

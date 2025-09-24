@@ -2095,7 +2095,7 @@ class FacebookAICommentBot:
             # Replace common problematic emojis with text equivalents
             emoji_replacements = {
                 '✨': '*',       # Sparkles
-                '💎': 'diamond', # Diamond  
+                '💎': 'diamond', # Diamond
                 '💍': 'ring',    # Ring
                 '👑': 'crown',   # Crown
                 '🌟': '*',       # Star
@@ -2110,6 +2110,10 @@ class FacebookAICommentBot:
                 '💯': '100',     # 100 emoji
                 '🎉': '!',       # Party
                 '🏆': 'trophy',  # Trophy
+                '🔍': '',        # Magnifying glass (search) - MISSING EMOJI
+                '📝': '',        # Memo/note - MISSING EMOJI
+                '🚀': '',        # Rocket - MISSING EMOJI
+                '🎯': '',        # Direct hit/target - MISSING EMOJI
             }
             
             # Apply emoji replacements

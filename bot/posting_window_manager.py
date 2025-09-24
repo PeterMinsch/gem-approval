@@ -230,6 +230,10 @@ class WindowPostingManager:
                 '💯': '100',     # 100 emoji
                 '🎉': '!',       # Party
                 '🏆': 'trophy',  # Trophy
+                '🔍': '',        # Magnifying glass (search) - MISSING EMOJI
+                '📝': '',        # Memo/note - MISSING EMOJI
+                '🚀': '',        # Rocket - MISSING EMOJI
+                '🎯': '',        # Direct hit/target - MISSING EMOJI
             }
 
             # Apply emoji replacements
