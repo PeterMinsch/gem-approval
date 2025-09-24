@@ -233,21 +233,61 @@ class BrowserManager:
                 if not self.driver.session_id:
                     raise WebDriverException("Failed to establish WebDriver session")
                 
-                # Test the connection
+                # ENHANCED: Test connection with crash detection
                 try:
-                    self.driver.execute_script("return navigator.userAgent;")
-                    logger.info(f"✅ Chrome driver connected successfully (session: {self.driver.session_id[:8]}...)")
+                    logger.info("🧪 Testing Chrome driver connection...")
+
+                    # Test 1: Basic script execution
+                    user_agent = self.driver.execute_script("return navigator.userAgent;")
+                    logger.info(f"✅ Chrome responding - User Agent: {user_agent[:50]}...")
+                    logger.info(f"✅ Session ID: {self.driver.session_id[:8]}...")
+
+                    # Test 2: Wait 5 seconds and check if Chrome is still alive
+                    logger.info("⏱️ Testing Chrome stability (5 second wait)...")
+                    time.sleep(5)
+
+                    # Test 3: Try another command to ensure it's still responsive
+                    title = self.driver.execute_script("return document.title || 'No title';")
+                    logger.info(f"✅ Chrome still responsive after 5s: {title}")
 
                     # Attempt automatic login if credentials are available
                     self._attempt_auto_login()
 
+                    logger.info("✅ Chrome driver fully validated and ready")
                     return self.driver
-                    
+
                 except Exception as test_error:
-                    logger.error(f"Driver created but not responding: {test_error}")
+                    logger.error(f"❌ CHROME CRASH DETECTED: {test_error}")
+
+                    # Enhanced crash diagnosis
+                    if "session deleted" in str(test_error):
+                        logger.error("🔍 CRASH ANALYSIS: Chrome browser process died unexpectedly")
+                        logger.error("    Possible causes:")
+                        logger.error("    - Missing system dependencies (libgconf, libxss1, etc.)")
+                        logger.error("    - Insufficient memory or disk space")
+                        logger.error("    - Incompatible Chrome flags for server environment")
+                        logger.error("    - Container resource limits")
+
+                        # Check if Chrome process still exists
+                        try:
+                            import psutil
+                            chrome_processes = [p for p in psutil.process_iter(['pid', 'name']) if 'chrome' in p.info['name'].lower()]
+                            logger.info(f"🔍 Active Chrome processes: {len(chrome_processes)}")
+                            for proc in chrome_processes[:3]:  # Show first 3
+                                logger.info(f"    PID {proc.info['pid']}: {proc.info['name']}")
+                        except ImportError:
+                            logger.info("🔍 psutil not available for process checking")
+                        except Exception as proc_error:
+                            logger.error(f"🔍 Process check failed: {proc_error}")
+
                     if self.driver:
-                        self.driver.quit()
-                    raise WebDriverException("Driver health check failed")
+                        try:
+                            self.driver.quit()
+                        except:
+                            pass
+                        self.driver = None
+
+                    raise WebDriverException(f"Chrome crash detected: {test_error}")
                     
             except WebDriverException as e:
                 logger.warning(f"WebDriver connection attempt {attempt + 1} failed: {e}")
