@@ -192,25 +192,19 @@ class BrowserManager:
                 
                 chrome_options = Options()
 
-                # CRITICAL FIX: Ultra-minimal Chrome options for problematic server environment
-                # Only the absolutely essential flags to get Chrome working
+                # CRITICAL FIX: Use EXACT same configuration as working diagnostic script
+                # These 4 flags are proven to work on your server
                 chrome_options.add_argument("--headless")
                 chrome_options.add_argument("--no-sandbox")
                 chrome_options.add_argument("--disable-dev-shm-usage")
                 chrome_options.add_argument("--disable-gpu")
-                chrome_options.add_argument("--disable-extensions")
-                chrome_options.add_argument("--disable-plugins")
-                chrome_options.add_argument("--disable-web-security")
-                chrome_options.add_argument("--single-process")
-                chrome_options.add_argument("--disable-logging")
-                chrome_options.add_argument("--window-size=1366,768")  # Smaller window
-                chrome_options.add_argument("--memory-pressure-off")
-                chrome_options.add_argument("--max_old_space_size=256")  # Even smaller heap
 
-                # Minimal profile setup
-                user_data_dir = os.path.join(os.getcwd(), "chrome_minimal_main")
-                os.makedirs(user_data_dir, exist_ok=True)
+                # Use temporary profile (same as diagnostic)
+                import tempfile
+                user_data_dir = tempfile.mkdtemp(prefix="chrome_main_profile_")
                 chrome_options.add_argument(f"--user-data-dir={user_data_dir}")
+
+                logger.info(f"🔧 Using proven Chrome config with temp profile: {user_data_dir}")
 
                 service = Service(ChromeDriverManager().install())
 
