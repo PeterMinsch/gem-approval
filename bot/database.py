@@ -587,6 +587,20 @@ class BotDatabase:
             
             return comment_id
     
+    def get_processed_posts(self, limit: int = 1000) -> List[Dict[str, Any]]:
+        """Get all processed posts (non-NEW status) for boundary detection"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, fb_post_id, post_url, status, created_at, processed_at
+                FROM posts
+                WHERE status != 'NEW'
+                ORDER BY created_at DESC
+                LIMIT ?
+            """, (limit,))
+
+            return [dict(row) for row in cursor.fetchall()]
+
     def get_posts_by_status(self, status: str = None, limit: int = 100) -> List[Dict[str, Any]]:
         """Get posts filtered by status"""
         with self.get_connection() as conn:
