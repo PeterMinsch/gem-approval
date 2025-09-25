@@ -592,7 +592,7 @@ class BotDatabase:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT id, fb_post_id, post_url, status, created_at, processed_at
+                SELECT id, fb_post_id, post_url, status, created_at, updated_at
                 FROM posts
                 WHERE status != 'NEW'
                 ORDER BY created_at DESC
