@@ -193,11 +193,12 @@ class BrowserManager:
                 chrome_options = Options()
 
                 # CRITICAL FIX: Use EXACT same configuration as working diagnostic script
-                # These 4 flags are proven to work on your server
+                # These 5 flags are proven to work on your server + single-process to avoid renderer timeouts
                 chrome_options.add_argument("--headless")
                 chrome_options.add_argument("--no-sandbox")
                 chrome_options.add_argument("--disable-dev-shm-usage")
                 chrome_options.add_argument("--disable-gpu")
+                chrome_options.add_argument("--single-process")  # Eliminate renderer timeouts
 
                 # Use temporary profile (same as diagnostic)
                 import tempfile
