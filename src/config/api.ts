@@ -10,14 +10,14 @@ const getApiBaseUrl = (): string => {
     return apiUrl;
   }
   
-  // Fallback to current hostname with port 8000 for development
+  // Fallback to current hostname with port 8001 for development
   if (typeof window !== 'undefined') {
     const { hostname, protocol } = window.location;
-    return `${protocol}//${hostname}:8000`;
+    return `${protocol}//${hostname}:8001`;
   }
-  
+
   // Final fallback to localhost
-  return 'http://localhost:8000';
+  return 'http://localhost:8001';
 };
 
 export const API_BASE_URL = getApiBaseUrl();
