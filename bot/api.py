@@ -1,7 +1,8 @@
-from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File
+from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from pathlib import Path
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 import asyncio
@@ -2519,6 +2520,41 @@ async def manual_facebook_login():
         raise HTTPException(status_code=500, detail=f"Login error: {str(e)}")
 
 
+# Serve frontend static files
+# The dist folder is in the parent directory (../dist from bot/)
+FRONTEND_DIR = Path(__file__).parent.parent / "dist"
+
+# Mount frontend assets (JS, CSS, etc.) if dist folder exists
+if FRONTEND_DIR.exists():
+    app.mount("/assets", StaticFiles(directory=FRONTEND_DIR / "assets"), name="frontend_assets")
+
+    @app.get("/", response_class=HTMLResponse)
+    async def serve_frontend():
+        """Serve the frontend index.html"""
+        index_path = FRONTEND_DIR / "index.html"
+        if index_path.exists():
+            return FileResponse(index_path)
+        return HTMLResponse(content="<h1>Frontend not built. Run npm run build.</h1>", status_code=404)
+
+    @app.get("/{full_path:path}")
+    async def catch_all(request: Request, full_path: str):
+        """Catch-all route for SPA - serve index.html for non-API routes"""
+        # Don't intercept API routes, uploads, or actual files
+        if full_path.startswith(("api/", "uploads/", "comments/", "bot/", "health", "status")):
+            raise HTTPException(status_code=404, detail="Not found")
+
+        # Check if it's a static file request
+        static_file = FRONTEND_DIR / full_path
+        if static_file.exists() and static_file.is_file():
+            return FileResponse(static_file)
+
+        # Otherwise serve index.html for SPA routing
+        index_path = FRONTEND_DIR / "index.html"
+        if index_path.exists():
+            return FileResponse(index_path)
+        raise HTTPException(status_code=404, detail="Not found")
+
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8001)
