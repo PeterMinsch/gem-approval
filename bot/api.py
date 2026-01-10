@@ -1101,9 +1101,9 @@ def stop_bot():
     
     logger.info("✅ Bot stopped successfully")
 
-# API endpoints
-@app.get("/")
-async def root():
+# API health check endpoint
+@app.get("/health")
+async def health():
     return {"message": "Bravo Bot API with Comment Approval Workflow is running"}
 
 @app.post("/bot/start", response_model=Dict[str, str])
