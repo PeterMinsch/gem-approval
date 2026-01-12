@@ -710,19 +710,33 @@ def run_bot_with_queuing(bot_instance: FacebookAICommentBot, max_scrolls: int = 
                         if bot_instance and bot_instance.driver:
                             logger.info(f"🖥️ Driver available, capturing post metadata...")
                             
-                            # Extract post images using direct selectors (more robust)
+                            # Extract post images - scoped to post container to avoid image bleeding
                             try:
-                                logger.info("🖼️ Extracting post images using direct selectors...")
+                                logger.info("🖼️ Extracting post images (scoped to post container)...")
+
+                                # First find the post container to scope our search
+                                post_container = None
+                                try:
+                                    post_container = bot_instance.driver.find_element(By.XPATH, "//div[@role='article'][1]")
+                                    logger.info("✅ Found post container, scoping image search")
+                                except:
+                                    logger.warning("⚠️ Could not find post container, falling back to page-wide search")
+
+                                # Image selectors - use relative paths (./) when scoped to container
                                 image_selectors = [
-                                    "//img[contains(@src, 'scontent')]",
-                                    "//img[contains(@src, 'fbcdn')]", 
-                                    "//img[contains(@class, 'scaledImageFitWidth')]",
-                                    "//img[contains(@class, 'img')]"
+                                    ".//img[contains(@src, 'scontent')]",
+                                    ".//img[contains(@src, 'fbcdn')]",
+                                    ".//img[contains(@class, 'scaledImageFitWidth')]",
+                                    ".//img[contains(@class, 'img')]"
                                 ]
-                                
+
                                 images = []
+                                search_element = post_container if post_container else bot_instance.driver
+
                                 for selector in image_selectors:
-                                    img_elements = bot_instance.driver.find_elements(By.XPATH, selector)
+                                    # Use absolute path if searching whole page
+                                    actual_selector = selector if post_container else selector.replace("./", "//")
+                                    img_elements = search_element.find_elements(By.XPATH, actual_selector)
                                     logger.info(f"Selector {selector[:30]}... found {len(img_elements)} images")
                                     for img in img_elements:
                                         try:
@@ -732,14 +746,14 @@ def run_bot_with_queuing(bot_instance: FacebookAICommentBot, max_scrolls: int = 
                                                 logger.info(f"✅ Found image: {src[:80]}...")
                                         except:
                                             continue
-                                
+
                                 if images:
-                                    logger.info(f"✅ Successfully extracted {len(images)} images")
+                                    logger.info(f"✅ Successfully extracted {len(images)} images from post container")
                                     post_images = json.dumps(images)
                                 else:
                                     logger.info("⚠️ No images found for this post")
                                     post_images = ""
-                                    
+
                             except Exception as e:
                                 logger.warning(f"Failed to extract post images: {e}")
                                 post_images = ""
