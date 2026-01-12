@@ -110,29 +110,42 @@ class PostExtractor:
     
     def is_valid_post_url(self, url: str) -> bool:
         """
-        Check if a URL is a valid post URL
-        
+        Check if a URL is a valid GROUP post URL (not personal feed)
+
         Args:
             url: URL to validate
-            
+
         Returns:
-            True if valid, False otherwise
+            True if valid group post, False otherwise
         """
         if not url or len(url) < 50:
             return False
-        
+
         # Must be a Facebook URL
         if 'facebook.com' not in url:
             return False
-        
-        # Check for valid post patterns
-        valid_patterns = [
-            '/groups/',
-            '/photo/',
-            '/commerce/listing/'
-        ]
-        
-        return any(pattern in url for pattern in valid_patterns)
+
+        # Group posts - always valid
+        if '/groups/' in url:
+            return True
+
+        # Photo posts - only accept GROUP photos (set=gm.), reject personal feed photos (set=a.)
+        if '/photo/' in url:
+            # Group media photos have set=gm. in the URL
+            if 'set=gm.' in url:
+                return True
+            # Personal feed photos have set=a. - reject these
+            if 'set=a.' in url:
+                logger.debug(f"Rejecting personal feed photo: {url[:80]}...")
+                return False
+            # Other photo patterns - reject to be safe
+            return False
+
+        # Commerce listings
+        if '/commerce/listing/' in url:
+            return True
+
+        return False
     
     @time_method
     def get_post_text(self) -> str:
