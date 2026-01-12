@@ -291,31 +291,37 @@ class BrowserManager:
                 
                 # Test the driver and copy session cookies for auto-login
                 self.posting_driver.get("https://www.facebook.com")
-                
+
                 # Test driver health
                 self.posting_driver.execute_script("return navigator.userAgent;")
                 logger.info(f"✅ Posting driver connected successfully (session: {self.posting_driver.session_id[:8]}...)")
-                
+
                 # Independent authentication for posting driver
                 logger.info("🔑 Setting up independent authentication for posting driver...")
-                username = os.environ.get('FACEBOOK_USERNAME')
-                password = os.environ.get('FACEBOOK_PASSWORD')
 
-                if username and password:
-                    # Create a temporary browser manager instance to use login method
-                    temp_driver = self.posting_driver
-                    original_driver = self.driver
-                    self.driver = temp_driver  # Temporarily switch for login
+                # First try loading cookies for posting driver
+                posting_logged_in = self._load_cookies_for_posting_driver()
 
-                    try:
-                        if self.login_to_facebook(username, password):
-                            logger.info("✅ Independent login successful for posting driver")
-                        else:
-                            logger.warning("⚠️ Independent login failed for posting driver")
-                    finally:
-                        self.driver = original_driver  # Restore original driver
-                else:
-                    logger.warning("⚠️ No credentials available for posting driver login")
+                if not posting_logged_in:
+                    # Fall back to username/password login
+                    username = os.environ.get('FACEBOOK_USERNAME')
+                    password = os.environ.get('FACEBOOK_PASSWORD')
+
+                    if username and password:
+                        # Create a temporary browser manager instance to use login method
+                        temp_driver = self.posting_driver
+                        original_driver = self.driver
+                        self.driver = temp_driver  # Temporarily switch for login
+
+                        try:
+                            if self.login_to_facebook(username, password):
+                                logger.info("✅ Independent login successful for posting driver")
+                            else:
+                                logger.warning("⚠️ Independent login failed for posting driver")
+                        finally:
+                            self.driver = original_driver  # Restore original driver
+                    else:
+                        logger.warning("⚠️ No credentials available for posting driver login")
 
                 logger.info("✅ Background posting Chrome driver set up successfully.")
                     
@@ -863,6 +869,72 @@ class BrowserManager:
 
         except Exception as e:
             logger.error(f"Error loading cookies: {e}")
+            return False
+
+    def _load_cookies_for_posting_driver(self) -> bool:
+        """
+        Load cookies from cookies.json file for the posting driver
+
+        Returns:
+            True if cookies loaded successfully and login verified, False otherwise
+        """
+        if not self.posting_driver:
+            return False
+
+        try:
+            # Look for cookies.json in the bot directory
+            bot_dir = os.path.dirname(os.path.dirname(__file__))
+            cookies_path = os.path.join(bot_dir, 'cookies.json')
+
+            if not os.path.exists(cookies_path):
+                logger.debug(f"No cookies file found at {cookies_path} for posting driver")
+                return False
+
+            logger.info(f"🍪 Loading cookies for posting driver from {cookies_path}")
+
+            with open(cookies_path, 'r') as f:
+                cookies = json.load(f)
+
+            if not cookies:
+                logger.warning("Cookies file is empty for posting driver")
+                return False
+
+            # Add each cookie to posting driver
+            cookies_added = 0
+            for cookie in cookies:
+                try:
+                    selenium_cookie = {
+                        'name': cookie['name'],
+                        'value': cookie['value'],
+                        'domain': cookie.get('domain', '.facebook.com'),
+                        'path': cookie.get('path', '/'),
+                        'secure': cookie.get('secure', True),
+                    }
+
+                    if not cookie.get('session', False) and 'expirationDate' in cookie:
+                        selenium_cookie['expiry'] = int(cookie['expirationDate'])
+
+                    self.posting_driver.add_cookie(selenium_cookie)
+                    cookies_added += 1
+                except Exception as e:
+                    logger.debug(f"Could not add cookie {cookie.get('name')} to posting driver: {e}")
+
+            logger.info(f"🍪 Added {cookies_added}/{len(cookies)} cookies to posting driver")
+
+            # Refresh page to apply cookies
+            self.posting_driver.refresh()
+            time.sleep(3)
+
+            # Verify login worked using is_posting_driver_logged_in
+            if self.is_posting_driver_logged_in():
+                logger.info("✅ Posting driver cookie login successful!")
+                return True
+            else:
+                logger.warning("⚠️ Posting driver cookies loaded but login not verified")
+                return False
+
+        except Exception as e:
+            logger.error(f"Error loading cookies for posting driver: {e}")
             return False
 
     def _attempt_auto_login(self):
