@@ -181,12 +181,51 @@ class MessengerAutomation:
         except Exception as e:
             logger.debug(f"Could not re-enable link clicks: {e}")
 
+    async def _dismiss_e2e_popup(self):
+        """Dismiss the end-to-end encryption popup if present"""
+        try:
+            # Look for the E2E encryption popup "Continue" button
+            continue_selectors = [
+                "//span[contains(text(), 'Continue')]",
+                "//div[contains(text(), 'Continue')]",
+                "//span[text()='Continue']",
+                # More specific selector based on the provided element
+                "//span[@class='x1lliihq x6ikm8r x10wlt62 x1n2onr6 xlyipyv xuxw1ft' and text()='Continue']",
+            ]
+
+            for selector in continue_selectors:
+                try:
+                    # Short timeout - popup may not always be present
+                    continue_btn = WebDriverWait(self.browser, 2).until(
+                        EC.element_to_be_clickable((By.XPATH, selector))
+                    )
+                    logger.info("🔐 Found E2E encryption popup, clicking Continue...")
+                    continue_btn.click()
+                    await asyncio.sleep(1)  # Wait for popup to dismiss
+                    logger.info("✅ Dismissed E2E encryption popup")
+                    return True
+                except TimeoutException:
+                    continue
+                except Exception as e:
+                    logger.debug(f"Continue button selector failed: {e}")
+                    continue
+
+            logger.debug("No E2E encryption popup found (this is normal)")
+            return False
+
+        except Exception as e:
+            logger.debug(f"E2E popup check failed: {e}")
+            return False
+
     async def _send_text_message(self, message: str):
         """Send text message only - clean and simple"""
         try:
             # Disable link clicks to prevent unwanted navigation
             await self._disable_link_clicks()
-            
+
+            # Dismiss E2E encryption popup if present
+            await self._dismiss_e2e_popup()
+
             # Common message box selectors for Messenger
             message_selectors = [
                 "div[role='textbox'][contenteditable='true']",
