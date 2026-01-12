@@ -860,7 +860,7 @@ class BrowserManager:
             time.sleep(3)
 
             # Verify login worked
-            if self._is_logged_in():
+            if self._is_fully_logged_in():
                 logger.info("✅ Cookie login successful!")
                 return True
             else:
