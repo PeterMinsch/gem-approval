@@ -58,33 +58,46 @@ class MessengerAutomation:
     async def _open_conversation(self, recipient: str):
         """Find and open conversation with recipient"""
         try:
-            # Try to navigate directly to conversation
+            # Build conversation URL
             if recipient.startswith("http"):
-                # Direct URL provided (e.g., from messenger URL)
                 conversation_url = recipient
             else:
-                # Assume it's a Facebook ID - use Facebook messenger format
                 conversation_url = f"https://www.facebook.com/messages/t/{recipient}"
 
-            logger.info(f"Opening conversation: {conversation_url}")
-            self.browser.get(conversation_url)
-            await asyncio.sleep(5)  # Allow more time for conversation to load
+            # Step 1: First go to Messenger inbox to establish session
+            logger.info("📬 Navigating to Messenger inbox first...")
+            self.browser.get("https://www.facebook.com/messages/")
+            await asyncio.sleep(4)
 
-            # Check if we're logged in - but be more lenient
             current_url = self.browser.current_url.lower()
 
-            # Only fail if we're clearly on a login page (not just any URL with 'login')
-            if current_url.endswith('/login') or '/login?' in current_url or current_url == 'https://www.facebook.com/login/':
-                logger.warning("Redirected to login page, attempting to reload cookies...")
+            # Check if we got redirected to login
+            if '/login' in current_url:
+                logger.warning("Redirected to login from Messenger inbox, trying direct conversation...")
+            else:
+                logger.info("✅ Messenger inbox loaded successfully")
 
-                # Try refreshing and waiting
-                self.browser.refresh()
-                await asyncio.sleep(3)
+            # Step 2: Now navigate to the specific conversation
+            logger.info(f"Opening conversation: {conversation_url}")
+            self.browser.get(conversation_url)
+            await asyncio.sleep(5)
+
+            current_url = self.browser.current_url.lower()
+
+            # Check if we're on login page
+            if '/login' in current_url:
+                logger.warning("Still redirected to login, trying messenger.com...")
+
+                # Try messenger.com as alternative
+                messenger_url = f"https://www.messenger.com/t/{recipient}"
+                logger.info(f"Trying messenger.com: {messenger_url}")
+                self.browser.get(messenger_url)
+                await asyncio.sleep(5)
 
                 current_url = self.browser.current_url.lower()
-                if current_url.endswith('/login') or '/login?' in current_url:
-                    logger.error("Still on login page after refresh")
-                    raise Exception("Persistent browser needs login - please restart API server and log in")
+                if '/login' in current_url:
+                    logger.error("Both Facebook and Messenger.com require login")
+                    raise Exception("Messenger requires login - cookies may be invalid")
 
             # Verify we're on a messenger page
             if '/messages/' in self.browser.current_url or 'messenger.com' in self.browser.current_url:
@@ -176,10 +189,13 @@ class MessengerAutomation:
             
             # Common message box selectors for Messenger
             message_selectors = [
+                "div[role='textbox'][contenteditable='true']",
                 "div[role='textbox']",
+                "p.xat24cr.xdj266r",  # Facebook's specific class for message input
                 "div[contenteditable='true']",
                 "div[data-testid='message-text-input']",
-                "div[aria-label*='message']"
+                "div[aria-label*='message']",
+                "div[aria-label*='Message']"
             ]
             
             message_box = None
