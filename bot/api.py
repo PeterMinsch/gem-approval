@@ -603,14 +603,16 @@ def run_bot_in_background(post_url: str = None, max_scrolls: int = None,
             
         bot_instance = FacebookAICommentBot(config)
         bot_status["is_running"] = True
+        bot_status["current_status"] = "running"
         bot_status["start_time"] = datetime.now().isoformat()
-        
+
         # Start the bot using the existing function
         run_bot_with_queuing(bot_instance, max_scrolls)
-        
+
     except Exception as e:
         logger.error(f"❌ Error in background bot: {e}")
         bot_status["is_running"] = False
+        bot_status["current_status"] = "error"
         bot_status["error_message"] = str(e)
         raise
 
@@ -957,6 +959,7 @@ def run_bot_with_queuing(bot_instance: FacebookAICommentBot, max_scrolls: int = 
                     
                 # Exit after processing the specific post
                 bot_status["is_running"] = False
+                bot_status["current_status"] = "stopped"
                 
             else:
                 # Start scanning for posts in group mode
@@ -1081,7 +1084,11 @@ def run_bot_with_queuing(bot_instance: FacebookAICommentBot, max_scrolls: int = 
     finally:
         # Log performance summary before cleanup
         log_performance_summary()
-        
+
+        # Update status to stopped
+        bot_status["is_running"] = False
+        bot_status["current_status"] = "stopped"
+
         if bot_instance and bot_instance.driver:
             bot_instance.driver.quit()
             logger.info("Chrome browser closed")
