@@ -220,9 +220,9 @@ export function ImageGallery({
         key={image.filename}
         onClick={() => onImageSelect(image.filename)}
         className={cn(
-          "relative group cursor-pointer rounded-lg overflow-hidden border-2 transition-all",
-          isSelected 
-            ? "border-primary ring-2 ring-primary/20" 
+          "relative group cursor-pointer rounded-lg overflow-hidden border-2 transition-colors duration-150",
+          isSelected
+            ? "border-primary ring-2 ring-primary/20"
             : "border-border hover:border-primary/50"
         )}
       >

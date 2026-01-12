@@ -507,10 +507,10 @@ export const CommentQueue: React.FC = () => {
             {comments.map((comment, index) => (
               <Card 
                 key={comment.id} 
-                className="group relative overflow-hidden bg-gradient-to-br from-white via-slate-50/50 to-white border-0 shadow-lg hover:shadow-2xl transition-all duration-500 hover:scale-[1.02] backdrop-blur-sm"
+                className="group relative overflow-hidden bg-gradient-to-br from-white via-slate-50/50 to-white border-0 shadow-lg hover:shadow-xl transition-shadow duration-200 backdrop-blur-sm"
               >
-                <div className="absolute inset-0 bg-gradient-to-r from-blue-500/5 via-purple-500/5 to-indigo-500/5 opacity-0 group-hover:opacity-100 transition-all duration-500" />
-                <div className="absolute left-0 top-0 h-full w-1.5 bg-gradient-to-b from-blue-500 via-purple-500 to-indigo-600 group-hover:w-2 transition-all duration-300" />
+                <div className="absolute inset-0 bg-gradient-to-r from-blue-500/5 via-purple-500/5 to-indigo-500/5 opacity-0 group-hover:opacity-100 transition-opacity duration-200" />
+                <div className="absolute left-0 top-0 h-full w-1.5 bg-gradient-to-b from-blue-500 via-purple-500 to-indigo-600 group-hover:w-2 transition-[width] duration-200" />
                 <CardContent className="relative pt-6 z-10">
                   <div className="flex items-start justify-between mb-4">
                     <div className="flex-1">

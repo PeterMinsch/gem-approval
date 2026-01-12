@@ -122,7 +122,7 @@ export function CommentCard({ comment, onApprove, onReject }: CommentCardProps) 
 
   
   return (
-    <Card className="transition-all duration-200 hover:shadow-lg border border-border/50">
+    <Card className="transition-shadow duration-200 hover:shadow-lg border border-border/50">
       <CardHeader className="pb-3">
         <div className="flex items-start justify-between gap-3">
           <div className="flex-1 min-w-0">
