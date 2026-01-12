@@ -1087,7 +1087,7 @@ export const CommentQueue: React.FC = () => {
                               <Button
                                 size="sm"
                                 onClick={() =>
-                                  window.open(comment.post_author_url, "_blank")
+                                  window.open(comment.post_url, "_blank")
                                 }
                                 className="bg-gradient-to-r from-purple-100 to-indigo-100 hover:from-purple-200 hover:to-indigo-200 text-purple-700 border-0 shadow-sm hover:shadow-md transition-all duration-200 rounded-lg font-medium"
                               >
