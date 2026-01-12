@@ -16,6 +16,13 @@ from selenium.webdriver.support.ui import WebDriverWait
 from modules.url_normalizer import normalize_url
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import NoSuchElementException, StaleElementReferenceException, TimeoutException
+from modules.stale_element_handler import (
+    extract_hrefs_safely,
+    collect_links_with_extraction,
+    safe_get_text,
+    safe_get_attribute,
+    retry_on_stale
+)
 
 # Import performance timer
 import sys
@@ -43,50 +50,50 @@ class PostExtractor:
     @time_method
     def scroll_and_collect_post_links(self, max_scrolls: int = 5) -> List[str]:
         """
-        Scroll through the page and collect post links
-        
+        Scroll through the page and collect post links.
+        Uses safe extraction to handle stale elements.
+
         Args:
             max_scrolls: Maximum number of scrolls to perform
-            
+
         Returns:
             List of post URLs
         """
         collected = set()
         empty_scroll_count = 0
         max_empty_scrolls = 2
-        
+
+        xpath_query = (
+            "//a[contains(@href, '/groups/') and contains(@href, '/posts/') and not(contains(@href, 'comment_id')) and string-length(@href) > 60]"
+            " | //a[contains(@href, '/photo/?fbid=') and contains(@href, 'set=')]"
+            " | //a[contains(@href, '/commerce/listing/') and string-length(@href) > 80]"
+        )
+
         for scroll_num in range(max_scrolls):
             logger.info(f"Scroll {scroll_num + 1}/{max_scrolls}")
-            
+
             # Wait for dynamic content to load
             try:
                 WebDriverWait(self.driver, 3).until(
-                    EC.presence_of_element_located((By.XPATH, 
+                    EC.presence_of_element_located((By.XPATH,
                         "//a[contains(@href, '/groups/') or contains(@href, '/photo/') or contains(@href, '/commerce/')]"))
                 )
             except TimeoutException:
                 logger.debug("No new elements appeared after wait")
-            
-            # Collect group posts, photo posts, and commerce listings
-            post_links = self.driver.find_elements(
-                By.XPATH,
-                "//a[contains(@href, '/groups/') and contains(@href, '/posts/') and not(contains(@href, 'comment_id')) and string-length(@href) > 60]" +
-                " | //a[contains(@href, '/photo/?fbid=') and contains(@href, 'set=')]" +
-                " | //a[contains(@href, '/commerce/listing/') and string-length(@href) > 80]"
-            )
-            
-            hrefs = [link.get_attribute('href') for link in post_links if link.get_attribute('href')]
+
+            # OPTION 1+2: Use safe extraction with retry - extracts data immediately
+            hrefs = collect_links_with_extraction(self.driver, xpath_query, max_retries=3)
             logger.info(f"Found {len(hrefs)} post links on this scroll")
-            
+
             # Filter and normalize URLs
             valid_hrefs = []
             for href in hrefs:
                 # Use centralized URL normalization
                 clean_href = normalize_url(href)
-                
+
                 if self.is_valid_post_url(clean_href) and clean_href not in collected:
                     valid_hrefs.append(clean_href)
-            
+
             if valid_hrefs:
                 empty_scroll_count = 0
             else:
@@ -94,11 +101,11 @@ class PostExtractor:
                 if empty_scroll_count >= max_empty_scrolls:
                     logger.info(f"Stopping early - {max_empty_scrolls} consecutive scrolls with no new posts")
                     break
-            
+
             collected.update(valid_hrefs)
             self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
             time.sleep(0.5)  # Reduced from 2s for faster scrolling
-        
+
         return list(collected)
     
     def is_valid_post_url(self, url: str) -> bool:
@@ -261,9 +268,10 @@ class PostExtractor:
         found_main_content = False
         
         # Process up to 10 elements but stop early if we find comments
-        for i, element in enumerate(elements[:10]):  
+        for i, element in enumerate(elements[:10]):
             try:
-                text = element.text.strip()
+                # Use safe extraction to handle stale elements
+                text = safe_get_text(element, default="").strip()
                 
                 # Skip empty or very short text
                 if not text or len(text) < 5:
@@ -366,13 +374,10 @@ class PostExtractor:
         # This handles photo posts or posts with minimal text
         if len(elements) <= 2:
             for element in elements:
-                try:
-                    text = element.text.strip()
-                    if text and len(text) > 5:
-                        logger.info(f"Photo/minimal post - extracted: {text[:100]}...")
-                        return text
-                except:
-                    continue
+                text = safe_get_text(element, default="").strip()
+                if text and len(text) > 5:
+                    logger.info(f"Photo/minimal post - extracted: {text[:100]}...")
+                    return text
         
         # HYBRID: Smart fallback - try to extract any meaningful content from elements
         logger.debug("Primary extraction failed, trying smart fallback...")
@@ -409,12 +414,12 @@ class PostExtractor:
         
         for i, element in enumerate(elements):
             try:
-                text = element.text.strip()
+                text = safe_get_text(element, default="").strip()
                 if not text or len(text) < 10:
                     continue
-                    
+
                 text_lower = text.lower()
-                
+
                 # Calculate scores for post vs comment likelihood
                 comment_score = sum(1 for indicator in comment_indicators if indicator in text_lower)
                 post_score = sum(1 for indicator in post_indicators if indicator in text_lower)
@@ -730,7 +735,7 @@ class PostExtractor:
         # Collect all text candidates with analysis
         for i, element in enumerate(elements[:10]):  # Limit processing
             try:
-                text = element.text.strip()
+                text = safe_get_text(element, default="").strip()
                 if not text or len(text) < 3:
                     continue
                 
@@ -1196,13 +1201,19 @@ class PostExtractor:
     def get_existing_comments(self) -> List[str]:
         """
         Extract existing comments from the current post
-        
+
         Returns:
             List of existing comment texts
         """
         try:
             comment_elements = self.driver.find_elements(By.XPATH, "//div[@aria-label='Comment']//span")
-            return [el.text for el in comment_elements if el.text.strip()]
+            # Use safe extraction to handle stale elements
+            comments = []
+            for el in comment_elements:
+                text = safe_get_text(el, default="").strip()
+                if text:
+                    comments.append(text)
+            return comments
         except Exception as e:
             logger.error(f"Failed to extract comments: {e}")
             return []

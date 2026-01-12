@@ -1047,13 +1047,21 @@ def run_bot_with_queuing(bot_instance: FacebookAICommentBot, max_scrolls: int = 
                         time.sleep(5)  # Reduced from 30s for testing
                         
                     except Exception as e:
+                        error_str = str(e).lower()
+
+                        # Handle stale element errors gracefully - just continue to next scan
+                        if "stale element" in error_str:
+                            logger.warning(f"Stale element during scan (DOM changed) - continuing to next cycle")
+                            time.sleep(2)  # Brief pause then retry
+                            continue
+
                         logger.error(f"Error during scanning: {e}")
-                        
+
                         # Add connection recovery logic
-                        if ("connection refused" in str(e).lower() or 
-                            "max retries exceeded" in str(e).lower() or
-                            "failed to establish" in str(e).lower() or
-                            "connection broken" in str(e).lower()):
+                        if ("connection refused" in error_str or
+                            "max retries exceeded" in error_str or
+                            "failed to establish" in error_str or
+                            "connection broken" in error_str):
                             logger.warning("Connection error detected, attempting to restart browser...")
                             try:
                                 if bot_instance:
@@ -1062,7 +1070,7 @@ def run_bot_with_queuing(bot_instance: FacebookAICommentBot, max_scrolls: int = 
                                     continue  # Skip the sleep and retry immediately
                             except Exception as reconnect_error:
                                 logger.error(f"Failed to reconnect browser: {reconnect_error}")
-                        
+
                         time.sleep(10)  # Reduced from 60s - wait before retrying
                     
         except Exception as e:
