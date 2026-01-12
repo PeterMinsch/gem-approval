@@ -433,7 +433,7 @@ export const executeSeleniumAutomation = async (
     if (base64Images.length > 0) {
       console.log('🔄 Converting base64 post images to temporary files...');
       
-      const conversionResponse = await fetch('${API_BASE_URL}/convert-base64-images', {
+      const conversionResponse = await fetch(`${API_BASE_URL}/convert-base64-images`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -469,7 +469,7 @@ export const executeSeleniumAutomation = async (
     
     // Call the messenger automation API
     console.log('📡 Making API request to Selenium backend...');
-    const response = await fetch('${API_BASE_URL}/messenger/send-message', {
+    const response = await fetch(`${API_BASE_URL}/messenger/send-message`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
