@@ -2,6 +2,7 @@ import asyncio
 import os
 import time
 import platform
+import json
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
@@ -108,7 +109,75 @@ class MessengerBrowserManager:
 
         logger.info("No ChromeDriver found in common locations, letting selenium auto-detect")
         return None
-        
+
+    def _load_cookies_for_persistent_browser(self) -> bool:
+        """
+        Load cookies from cookies.json file for the persistent messenger browser
+
+        Returns:
+            True if cookies loaded successfully and login verified, False otherwise
+        """
+        try:
+            # Find cookies.json file
+            bot_dir = os.path.dirname(os.path.abspath(__file__))
+            cookies_path = os.path.join(bot_dir, 'cookies.json')
+
+            if not os.path.exists(cookies_path):
+                logger.debug(f"No cookies file found at {cookies_path} for persistent browser")
+                return False
+
+            logger.info(f"🍪 Loading cookies for persistent browser from {cookies_path}")
+
+            with open(cookies_path, 'r') as f:
+                cookies = json.load(f)
+
+            if not cookies:
+                logger.warning("Cookies file is empty for persistent browser")
+                return False
+
+            # Navigate to Facebook first to set domain
+            self.persistent_browser.get("https://www.facebook.com")
+            time.sleep(2)
+
+            # Add cookies to browser
+            cookies_added = 0
+            for cookie in cookies:
+                try:
+                    selenium_cookie = {
+                        'name': cookie['name'],
+                        'value': cookie['value'],
+                        'domain': cookie.get('domain', '.facebook.com'),
+                        'path': cookie.get('path', '/'),
+                        'secure': cookie.get('secure', True)
+                    }
+
+                    if not cookie.get('session', False) and 'expirationDate' in cookie:
+                        selenium_cookie['expiry'] = int(cookie['expirationDate'])
+
+                    self.persistent_browser.add_cookie(selenium_cookie)
+                    cookies_added += 1
+                except Exception as e:
+                    logger.debug(f"Could not add cookie {cookie.get('name')} to persistent browser: {e}")
+
+            logger.info(f"🍪 Added {cookies_added}/{len(cookies)} cookies to persistent browser")
+
+            # Refresh page to apply cookies
+            self.persistent_browser.refresh()
+            time.sleep(3)
+
+            # Verify login status
+            current_url = self.persistent_browser.current_url
+            if "login" in current_url.lower():
+                logger.warning("⚠️ Persistent browser cookies loaded but login not verified")
+                return False
+
+            logger.info("✅ Persistent browser cookie login successful!")
+            return True
+
+        except Exception as e:
+            logger.error(f"Error loading cookies for persistent browser: {e}")
+            return False
+
     def get_messenger_browser(self, session_id: str) -> webdriver.Chrome:
         """Get persistent browser - with auto-restart capability"""
         try:
@@ -264,43 +333,51 @@ class MessengerBrowserManager:
             self.persistent_browser.implicitly_wait(1)
             self.persistent_browser.set_page_load_timeout(30)
             
-            # Navigate to Facebook for login
-            self.persistent_browser.get("https://www.facebook.com")
-            time.sleep(2)
-            
             # Attempt automatic authentication for persistent browser
             logger.info("🔑 Attempting authentication for persistent messenger browser...")
 
-            # Get credentials from environment
-            username = os.environ.get('FACEBOOK_USERNAME')
-            password = os.environ.get('FACEBOOK_PASSWORD')
+            # First try loading cookies (most reliable, avoids CAPTCHA)
+            if self._load_cookies_for_persistent_browser():
+                logger.info("✅ Automatic authentication successful for persistent messenger browser")
+                self._browser_ready = True
+            else:
+                # Fall back to username/password login
+                logger.info("🔄 Cookie login failed, trying username/password...")
 
-            if username and password:
-                # Create temporary browser manager instance for authentication
-                import sys
-                sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-                from modules.browser_manager import BrowserManager
-                temp_manager = BrowserManager({"POST_URL": "https://www.facebook.com/groups/5440421919361046"})
-                temp_manager.driver = self.persistent_browser
+                # Navigate to Facebook for login
+                self.persistent_browser.get("https://www.facebook.com")
+                time.sleep(2)
 
-                try:
-                    if temp_manager.login_to_facebook(username, password):
-                        logger.info("✅ Automatic authentication successful for persistent messenger browser")
-                        self._browser_ready = True
-                    else:
-                        logger.warning("⚠️ Automatic authentication failed for persistent messenger browser")
+                # Get credentials from environment
+                username = os.environ.get('FACEBOOK_USERNAME')
+                password = os.environ.get('FACEBOOK_PASSWORD')
+
+                if username and password:
+                    # Create temporary browser manager instance for authentication
+                    import sys
+                    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+                    from modules.browser_manager import BrowserManager
+                    temp_manager = BrowserManager({"POST_URL": "https://www.facebook.com/groups/5440421919361046"})
+                    temp_manager.driver = self.persistent_browser
+
+                    try:
+                        if temp_manager.login_to_facebook(username, password):
+                            logger.info("✅ Automatic authentication successful for persistent messenger browser")
+                            self._browser_ready = True
+                        else:
+                            logger.warning("⚠️ Automatic authentication failed for persistent messenger browser")
+                            logger.info("🔐 MANUAL LOGIN may be required for persistent browser")
+                            self._browser_ready = False
+                    except Exception as auth_error:
+                        logger.warning(f"⚠️ Authentication error for persistent messenger browser: {auth_error}")
                         logger.info("🔐 MANUAL LOGIN may be required for persistent browser")
                         self._browser_ready = False
-                except Exception as auth_error:
-                    logger.warning(f"⚠️ Authentication error for persistent messenger browser: {auth_error}")
-                    logger.info("🔐 MANUAL LOGIN may be required for persistent browser")
+                else:
+                    logger.warning("⚠️ No credentials available for persistent messenger browser authentication")
+                    logger.info("🔐 MANUAL LOGIN REQUIRED for persistent browser")
+                    logger.info("📱 Please log into Facebook in the browser window that just opened")
+                    logger.info("✅ Once logged in, the browser will stay open for all messenger automation")
                     self._browser_ready = False
-            else:
-                logger.warning("⚠️ No credentials available for persistent messenger browser authentication")
-                logger.info("🔐 MANUAL LOGIN REQUIRED for persistent browser")
-                logger.info("📱 Please log into Facebook in the browser window that just opened")
-                logger.info("✅ Once logged in, the browser will stay open for all messenger automation")
-                self._browser_ready = False
             
             logger.info("✅ Persistent messenger browser started successfully")
             return True
