@@ -129,17 +129,11 @@ class PostExtractor:
         if '/groups/' in url:
             return True
 
-        # Photo posts - only accept GROUP photos (set=gm.), reject personal feed photos (set=a.)
+        # Photo posts - accept all since we verify we're on group page before scanning
+        # Photos shared from personal albums into groups won't have group markers,
+        # but they're still valid group content if found while on the group feed
         if '/photo/' in url:
-            # Group media photos have set=gm. in the URL
-            if 'set=gm.' in url:
-                return True
-            # Personal feed photos have set=a. - reject these
-            if 'set=a.' in url:
-                logger.debug(f"Rejecting personal feed photo: {url[:80]}...")
-                return False
-            # Other photo patterns - reject to be safe
-            return False
+            return True
 
         # Commerce listings
         if '/commerce/listing/' in url:
