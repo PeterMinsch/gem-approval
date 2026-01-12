@@ -65,16 +65,34 @@ class MessengerAutomation:
             else:
                 # Assume it's a Facebook ID - use Facebook messenger format
                 conversation_url = f"https://www.facebook.com/messages/t/{recipient}"
-            
+
             logger.info(f"Opening conversation: {conversation_url}")
             self.browser.get(conversation_url)
-            await asyncio.sleep(3)  # Allow conversation to load
-            
-            # Check if we're logged in (should not happen with persistent browser)
-            if "login" in self.browser.current_url.lower():
-                logger.error("Persistent browser not logged in - this should not happen!")
-                raise Exception("Persistent browser needs login - please restart API server and log in")
-            
+            await asyncio.sleep(5)  # Allow more time for conversation to load
+
+            # Check if we're logged in - but be more lenient
+            current_url = self.browser.current_url.lower()
+
+            # Only fail if we're clearly on a login page (not just any URL with 'login')
+            if current_url.endswith('/login') or '/login?' in current_url or current_url == 'https://www.facebook.com/login/':
+                logger.warning("Redirected to login page, attempting to reload cookies...")
+
+                # Try refreshing and waiting
+                self.browser.refresh()
+                await asyncio.sleep(3)
+
+                current_url = self.browser.current_url.lower()
+                if current_url.endswith('/login') or '/login?' in current_url:
+                    logger.error("Still on login page after refresh")
+                    raise Exception("Persistent browser needs login - please restart API server and log in")
+
+            # Verify we're on a messenger page
+            if '/messages/' in self.browser.current_url or 'messenger.com' in self.browser.current_url:
+                logger.info("✅ Successfully opened Messenger conversation")
+                return
+
+            logger.warning(f"Unexpected URL after navigation: {self.browser.current_url}")
+
         except Exception as e:
             logger.warning(f"Direct navigation failed, trying search: {e}")
             # Fallback to search method
