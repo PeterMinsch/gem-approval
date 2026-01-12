@@ -7,6 +7,7 @@ import os
 import time
 import logging
 import platform
+import json
 from typing import Optional
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
@@ -795,14 +796,86 @@ class BrowserManager:
             self.setup_driver()
             logger.info("Driver reconnection completed")
 
+    def _load_cookies_from_file(self) -> bool:
+        """
+        Load cookies from cookies.json file if it exists
+
+        Returns:
+            True if cookies loaded successfully and login verified, False otherwise
+        """
+        try:
+            # Look for cookies.json in the bot directory
+            bot_dir = os.path.dirname(os.path.dirname(__file__))
+            cookies_path = os.path.join(bot_dir, 'cookies.json')
+
+            if not os.path.exists(cookies_path):
+                logger.debug(f"No cookies file found at {cookies_path}")
+                return False
+
+            logger.info(f"🍪 Found cookies file at {cookies_path}")
+
+            with open(cookies_path, 'r') as f:
+                cookies = json.load(f)
+
+            if not cookies:
+                logger.warning("Cookies file is empty")
+                return False
+
+            # First navigate to Facebook to set the domain
+            self.driver.get("https://www.facebook.com")
+            time.sleep(2)
+
+            # Add each cookie
+            cookies_added = 0
+            for cookie in cookies:
+                try:
+                    # Selenium requires specific cookie format
+                    selenium_cookie = {
+                        'name': cookie['name'],
+                        'value': cookie['value'],
+                        'domain': cookie.get('domain', '.facebook.com'),
+                        'path': cookie.get('path', '/'),
+                        'secure': cookie.get('secure', True),
+                    }
+
+                    # Only add expiry if it's not a session cookie
+                    if not cookie.get('session', False) and 'expirationDate' in cookie:
+                        selenium_cookie['expiry'] = int(cookie['expirationDate'])
+
+                    self.driver.add_cookie(selenium_cookie)
+                    cookies_added += 1
+                except Exception as e:
+                    logger.debug(f"Could not add cookie {cookie.get('name')}: {e}")
+
+            logger.info(f"🍪 Added {cookies_added}/{len(cookies)} cookies")
+
+            # Refresh page to apply cookies
+            self.driver.refresh()
+            time.sleep(3)
+
+            # Verify login worked
+            if self._is_logged_in():
+                logger.info("✅ Cookie login successful!")
+                return True
+            else:
+                logger.warning("⚠️ Cookies loaded but login not verified")
+                return False
+
+        except Exception as e:
+            logger.error(f"Error loading cookies: {e}")
+            return False
+
     def _attempt_auto_login(self):
         """
-        Attempt automatic login using environment variables if available
+        Attempt automatic login using cookies file first, then environment variables
         """
-        import os
-
         try:
-            # Get credentials from environment variables
+            # First try loading cookies from file
+            if self._load_cookies_from_file():
+                logger.info("✅ Logged in via cookies file!")
+                return
+
+            # Fall back to username/password login
             username = os.environ.get('FACEBOOK_USERNAME')
             password = os.environ.get('FACEBOOK_PASSWORD')
 
