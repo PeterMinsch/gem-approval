@@ -1041,8 +1041,18 @@ def run_bot_with_queuing(bot_instance: FacebookAICommentBot, max_scrolls: int = 
                                 bot_instance.save_processed_post(clean_url, post_text=post_text, post_type="processed")
                                 
                             except Exception as e:
+                                error_str = str(e).lower()
                                 logger.error(f"Error processing post {clean_url}: {e}")
-                                bot_instance.save_processed_post(clean_url, post_text="", error_message=str(e))
+
+                                # Don't mark as processed if it's a transient/shutdown error
+                                # These posts should be retried on next scan
+                                transient_errors = ["connection refused", "connection broken", "session not created", "max retries"]
+                                is_transient = any(err in error_str for err in transient_errors)
+
+                                if is_transient:
+                                    logger.warning(f"⏭️ Transient error, post will be retried: {clean_url}")
+                                else:
+                                    bot_instance.save_processed_post(clean_url, post_text="", error_message=str(e))
                                 continue
                         
                         # Wait before next scan (reduced for testing)
@@ -1096,27 +1106,34 @@ def run_bot_with_queuing(bot_instance: FacebookAICommentBot, max_scrolls: int = 
 def stop_bot():
     """Stop the running bot and properly cleanup"""
     global bot_instance, bot_status
-    
+
     logger.info("🛑 Stopping bot...")
     bot_status["current_status"] = "stopping"
-    
+
+    # Signal the scan loop to stop FIRST
+    bot_status["is_running"] = False
+
+    # Give the scan loop time to see the stop signal and exit gracefully
+    import time
+    time.sleep(2)
+
     if bot_instance:
         try:
             # Stop the posting thread if it exists
             if hasattr(bot_instance, 'stop_posting_thread'):
                 logger.info("Stopping posting thread...")
                 bot_instance.stop_posting_thread()
-            
+
             # Close the main browser
             if bot_instance.driver:
                 logger.info("Closing main browser...")
                 bot_instance.driver.quit()
-                
+
             # Close the posting browser if it exists
             if hasattr(bot_instance, 'posting_driver') and bot_instance.posting_driver:
                 logger.info("Closing posting browser...")
                 bot_instance.posting_driver.quit()
-                
+
         except Exception as e:
             logger.error(f"Error during bot cleanup: {e}")
     
